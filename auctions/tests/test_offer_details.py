@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import unittest
 
-from topbot.messages import offer_details, plural, render_offer_line
-from topbot.models import Offer
+from topbot.messages import (INLINE_OFFERS, offer_details, offers_line, plural, render_auction_message,
+                             render_offer_line, seller_label)
+from topbot.models import Lot, Offer
 
 
 def offer(line: str, eng_name: str = "Snapcaster Mage", rus_name: str | None = None, *,
@@ -97,6 +98,69 @@ class PluralTest(unittest.TestCase):
                  22: "лота", 25: "лотов", 101: "лот", 111: "лотов"}
         for count, expected in cases.items():
             self.assertEqual(plural(count, "лот", "лота", "лотов"), expected, count)
+
+
+class OffersLineTest(unittest.TestCase):
+    def test_prices_and_sellers_are_joined_with_dots(self):
+        offers = [offer("", seller_name="Bernard", cost=700), offer("", seller_name="Cornelius", cost=800)]
+        self.assertEqual(offers_line(offers), "💰 Цены у продавцов: 700 ₽ Bernard · 800 ₽ Cornelius")
+
+    def test_limit_cuts_the_tail(self):
+        offers = [offer("", seller_name="Bernard", cost=700), offer("", seller_name="Cornelius", cost=800)]
+        self.assertEqual(offers_line(offers, limit=1), "💰 Цены у продавцов: 700 ₽ Bernard")
+
+    def test_default_limit_is_three_offers(self):
+        offers = [offer("", seller_name=f"S{index}", cost=700 + index) for index in range(5)]
+        self.assertEqual(offers_line(offers), offers_line(offers, limit=INLINE_OFFERS))
+        self.assertEqual(len(offers_line(offers).split(" · ")), 3)
+
+    def test_thousands_are_grouped_with_nbsp(self):
+        self.assertEqual(offers_line([offer("", seller_name="Bernard", cost=1200)]),
+                         "💰 Цены у продавцов: 1\u00a0200 ₽ Bernard")
+
+    def test_long_seller_name_is_shortened(self):
+        label = seller_label(offer("", seller_name="VeryLongSellerNicknameHere"))
+        self.assertEqual(label, "VeryLongSellerNic…")
+        self.assertEqual(len(label), 18)
+
+    def test_short_seller_name_is_kept(self):
+        self.assertEqual(seller_label(offer("", seller_name="Umezawa")), "Umezawa")
+
+    def test_source_is_used_when_the_seller_is_unknown(self):
+        self.assertEqual(seller_label(offer("", seller_name=None, source="MtgRussia.com")), "MtgRussia.com")
+
+
+class AuctionMessageTest(unittest.TestCase):
+    def lot(self, **overrides) -> Lot:
+        fields = dict(id=1, title="Bayou — Reserved List (3ED, EN, №283)", end_ts=1000, start_ts=0,
+                      start_bid=500, current_bid=1488, bid_count=5, bin_value=0, seller_id=1,
+                      seller_name="Red_clix", seller_city="Краснодар", seller_refs=93,
+                      shipping_quick=None, image_url=None, url="https://topdeck.ru/apps/toptrade/auctions/1")
+        fields.update(overrides)
+        return Lot(**fields)
+
+    def test_prices_go_after_the_bid_and_before_the_seller(self):
+        text = render_auction_message(self.lot(), 900, offers=[offer("", seller_name="Bernard", cost=700)])
+        lines = text.splitlines()
+        self.assertEqual(lines[0], "⏰ 15 мин до конца")
+        self.assertEqual(lines[1], "Bayou — Reserved List (3ED, EN, №283)")
+        self.assertEqual(lines[2], "Текущая ставка: 1\u00a0488 ₽ · 5 ставок")
+        self.assertEqual(lines[3], "💰 Цены у продавцов: 700 ₽ Bernard")
+        self.assertEqual(lines[4], "Продавец: Red_clix (Краснодар, 93 отз.)")
+
+    def test_no_offers_means_no_price_line(self):
+        text = render_auction_message(self.lot(), 900)
+        self.assertNotIn("Цены у продавцов", text)
+
+    def test_card_name_line_stays_above_the_prices(self):
+        text = render_auction_message(self.lot(), 900, card_name="Bayou",
+                                      offers=[offer("", seller_name="Bernard", cost=700)])
+        self.assertLess(text.index("Из вашего списка в лоте: Bayou"), text.index("💰 Цены у продавцов"))
+
+    def test_bin_line_sits_above_the_prices(self):
+        text = render_auction_message(self.lot(bin_value=2000), 900,
+                                      offers=[offer("", seller_name="Bernard", cost=700)])
+        self.assertLess(text.index("Выкуп: 2\u00a0000 ₽"), text.index("💰 Цены у продавцов"))
 
 
 if __name__ == "__main__":

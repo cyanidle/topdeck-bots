@@ -7,6 +7,9 @@ from .windows import humanize_remaining
 
 NBSP = "\u00a0"
 
+INLINE_OFFERS = 3
+SELLER_LABEL_LIMIT = 18
+
 QTY_PREFIX = re.compile(r"^\s*\d+\s*[xхXХ]?\s+")
 PRICE_TOKEN = re.compile(r"\d[\d\s\u00a0]*\s*(?:₽|руб(?:лей|ля|\.)?|rub\.?|р\.|p\.)", re.IGNORECASE)
 PRICE_GROUP = re.compile(r"\b\d{1,3}(?:[\s\u00a0]\d{3})+\b|\b\d{3,}\b")
@@ -62,7 +65,18 @@ def offer_details(offer: Offer, limit: int = 48) -> str:
     return details if len(details) <= limit else details[:limit - 1].rstrip() + "…"
 
 
-def render_auction_message(lot: Lot, remaining_s: int, card_name: str | None = None) -> str:
+def seller_label(offer: Offer, limit: int = SELLER_LABEL_LIMIT) -> str:
+    who = offer.seller_name or offer.source or "—"
+    return who if len(who) <= limit else who[:limit - 1] + "…"
+
+
+def offers_line(offers: list[Offer], limit: int = INLINE_OFFERS) -> str:
+    prices = " · ".join(f"{money(offer.cost)} ₽ {seller_label(offer)}" for offer in offers[:limit])
+    return f"💰 Цены у продавцов: {prices}"
+
+
+def render_auction_message(lot: Lot, remaining_s: int, card_name: str | None = None,
+                           offers: list[Offer] | None = None) -> str:
     bids = lot.bid_count
     lines = [f"⏰ {humanize_remaining(remaining_s)} до конца"]
     lines.append(lot.title)
@@ -72,6 +86,8 @@ def render_auction_message(lot: Lot, remaining_s: int, card_name: str | None = N
     lines.append(f"Текущая ставка: {money(lot.price)} ₽ · {bids} {bid_word}")
     if lot.bin_value > 0:
         lines.append(f"Выкуп: {money(lot.bin_value)} ₽")
+    if offers:
+        lines.append(offers_line(offers))
     seller_line = f"Продавец: {lot.seller_name or '—'}"
     if lot.seller_city:
         seller_line += f" ({lot.seller_city}"

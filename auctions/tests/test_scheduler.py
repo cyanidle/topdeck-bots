@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from topbot.db import Database, title_hash
-from topbot.models import Lot, PollStats
+from topbot.models import Lot, Offer, PollStats
 from topbot.notifier import Notifier
 from topbot.poller import AuctionPoller
 from topbot.scheduler import TICK_S, WindowScheduler
@@ -32,6 +32,11 @@ def make_lot(lot_id: int, title: str, end_ts: int, current_bid: int = 500, bid_c
     )
 
 
+def make_offer(seller: str, cost: int, eng_name: str = "Bayou") -> Offer:
+    return Offer(eng_name=eng_name, rus_name=None, name=eng_name, source="topdeck", seller_name=seller,
+                 seller_id=1, city="Москва", cost=cost, qty=1, url=None, line="", stamp=None)
+
+
 class RecordingNotifier(Notifier):
     def __init__(self, db: Database):
         self.sent: list[tuple[int, str]] = []
@@ -45,6 +50,7 @@ class SchedulerTestBase(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.db = Database(":memory:")
         self.db.ensure_user(42, "tester")
+        self.db.update_quiet(42, 0, 0)
         self.card = self.db.upsert_card("Bayou", "bayou")
         self.bolt = self.db.upsert_card("Lightning Bolt", "lightning bolt")
         self.db.add_to_watchlist(42, self.card)
@@ -123,6 +129,47 @@ class WindowTimingTest(SchedulerTestBase):
         self.assertEqual(await self.dispatch(NOW), 1)
         self.assertIn("10 мин", self.notifier.sent[0][1])
         self.assertEqual(self.db.sent_windows(42, "auction_window", 6), {900})
+
+
+class NotificationPricesTest(SchedulerTestBase):
+    async def test_three_cheapest_cached_prices_are_listed(self):
+        self.db.save_card_offers(self.card, [make_offer("Alphonse", 900), make_offer("Bernard", 700),
+                                             make_offer("Cornelius", 800), make_offer("Desmond", 1200)], NOW)
+        self.add_lot(make_lot(1, "Bayou (3ED, №283)", NOW + 3600))
+        self.assertEqual(await self.dispatch(NOW), 1)
+        text = self.notifier.sent[0][1]
+        self.assertIn("💰 Цены у продавцов: 700 ₽ Bernard · 800 ₽ Cornelius · 900 ₽ Alphonse", text)
+        self.assertNotIn("Desmond", text)
+
+    async def test_cheapest_offer_of_the_same_seller_is_shown_once(self):
+        self.db.save_card_offers(self.card, [make_offer("Alphonse", 900), make_offer("Alphonse", 700)], NOW)
+        self.add_lot(make_lot(2, "Bayou (3ED, №283)", NOW + 3600))
+        self.assertEqual(await self.dispatch(NOW), 1)
+        text = self.notifier.sent[0][1]
+        self.assertIn("💰 Цены у продавцов: 700 ₽ Alphonse", text)
+        self.assertNotIn("900", text)
+
+    async def test_notification_without_cached_prices_has_no_price_line(self):
+        self.add_lot(make_lot(3, "Bayou (3ED, №283)", NOW + 3600))
+        self.assertEqual(await self.dispatch(NOW), 1)
+        self.assertNotIn("Цены у продавцов", self.notifier.sent[0][1])
+
+    async def test_prices_sit_between_the_bid_and_the_seller(self):
+        self.db.save_card_offers(self.card, [make_offer("Bernard", 700)], NOW)
+        self.add_lot(make_lot(4, "Bayou (3ED, №283)", NOW + 3600))
+        self.assertEqual(await self.dispatch(NOW), 1)
+        lines = self.notifier.sent[0][1].splitlines()
+        bid = next(index for index, line in enumerate(lines) if line.startswith("Текущая ставка"))
+        prices = next(index for index, line in enumerate(lines) if line.startswith("💰 Цены у продавцов"))
+        seller = next(index for index, line in enumerate(lines) if line.startswith("Продавец"))
+        self.assertLess(bid, prices)
+        self.assertLess(prices, seller)
+
+    async def test_prices_are_read_from_the_cache_of_the_matched_card_only(self):
+        self.db.save_card_offers(self.bolt, [make_offer("Bernard", 700, eng_name="Lightning Bolt")], NOW)
+        self.add_lot(make_lot(5, "Bayou (3ED, №283)", NOW + 3600))
+        self.assertEqual(await self.dispatch(NOW), 1)
+        self.assertNotIn("Цены у продавцов", self.notifier.sent[0][1])
 
 
 class DelayTest(SchedulerTestBase):

@@ -23,7 +23,7 @@ from .clients.scryfall import ScryfallClient
 from .config import Settings
 from .db import Database
 from .matching import normalize
-from .messages import money, plural, render_offer_line
+from .messages import INLINE_OFFERS, money, offers_line, plural, render_offer_line
 from .models import Card, Offer, WatchlistCard
 from .notifier import Notifier
 from .poller import ensure_matches
@@ -37,7 +37,6 @@ ADD_SPLIT = re.compile(r"[\n;]+")
 COMMA = re.compile(r",")
 QTY = re.compile(r"^\s*\d+\s*[xхXХ]?\s+")
 SUGGEST_LIMIT = 5
-INLINE_OFFERS = 3
 PRICE_ROWS = 10
 TELEGRAM_TIMEOUT_S = 30.0
 CYRILLIC = re.compile(r"[а-яё]", re.I)
@@ -432,16 +431,6 @@ def _best_per_seller(offers: list[Offer]) -> list[Offer]:
     return sorted(best.values(), key=lambda offer: offer.cost)
 
 
-def _seller_label(offer: Offer, limit: int = 18) -> str:
-    who = offer.seller_name or offer.source or "—"
-    return who if len(who) <= limit else who[:limit - 1] + "…"
-
-
-def _cheapest_line(offers: list[Offer]) -> str:
-    prices = " · ".join(f"{money(offer.cost)} ₽ {_seller_label(offer)}" for offer in offers)
-    return escape(prices, quote=False)
-
-
 def _lots_line(card: WatchlistCard) -> str:
     if not card.lots_count:
         return "лотов нет"
@@ -462,7 +451,7 @@ def _card_line(card: WatchlistCard, offers: list[Offer]) -> str:
         name = f'<a href="{lot_url(card.next_lot_id)}">{name}</a>'
     lines = [f"<b>{name}</b>", _lots_line(card)]
     if offers:
-        lines.append(f"💰 Цены у продавцов: {_cheapest_line(offers)}")
+        lines.append(escape(offers_line(offers), quote=False))
     actions = " · ".join([
         f'<a href="{_start_link(f"price_{card.card_id}")}">цены</a>',
         f'<a href="{_start_link(f"rm_{card.card_id}")}">удалить</a>',

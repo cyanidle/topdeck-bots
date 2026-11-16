@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from .db import Database
-from .messages import render_auction_message
+from .messages import INLINE_OFFERS, render_auction_message
 from .models import Card, Lot
 from .notifier import Notifier
 from .windows import due_window
@@ -20,6 +20,7 @@ async def dispatch_lot_windows(db: Database, notifier: Notifier, lot: Lot,
     if not watched:
         return 0
     methods = db.lot_card_methods(lot.id)
+    offers_by_card = None
     remaining = lot.end_ts - now
     sent = 0
     for card_id in watched:
@@ -32,7 +33,10 @@ async def dispatch_lot_windows(db: Database, notifier: Notifier, lot: Lot,
                                 db.sent_windows(user_id, "auction_window", lot.id))
             if window is None:
                 continue
-            text = render_auction_message(lot, remaining, card_name=card_name)
+            if offers_by_card is None:
+                offers_by_card = db.top_offers_by_card(watched, INLINE_OFFERS)
+            text = render_auction_message(lot, remaining, card_name=card_name,
+                                          offers=offers_by_card.get(card_id, []))
             delivered = await notifier.notify(user, "auction_window", lot.id, window, text,
                                               {"lot": lot.id, "card_id": card_id})
             log.info("auction notification", extra={"user_id": user_id, "lot_id": lot.id,
