@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 
 URGENT_WINDOW = 900
+
+QUIET_PATTERN = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*[-–—]\s*(\d{1,2}):(\d{2})\s*$")
 
 
 def due_window(remaining_s: int, windows: tuple[int, ...], sent: set[int]) -> int | None:
@@ -42,6 +45,24 @@ def humanize_remaining(remaining_s: int) -> str:
         return f"{hours} ч {minutes:02d} мин" if minutes else f"{hours} ч"
     days, hours = divmod(hours, 24)
     return f"{days} д {hours} ч" if hours else f"{days} д"
+
+
+def format_quiet(quiet_from: int, quiet_to: int) -> str:
+    return f"{quiet_from // 60:02d}:{quiet_from % 60:02d}–{quiet_to // 60:02d}:{quiet_to % 60:02d}"
+
+
+def parse_quiet(text: str) -> tuple[int, int]:
+    """Разбирает «ЧЧ:ММ-ЧЧ:ММ» в минуты от полуночи; одинаковые границы значат «тихие часы выключены»."""
+    match = QUIET_PATTERN.match(text or "")
+    if match is None:
+        raise ValueError("Не понял время, нужен формат ЧЧ:ММ-ЧЧ:ММ, например 23:00-09:00")
+    quiet_from = int(match.group(1)) * 60 + int(match.group(2))
+    quiet_to = int(match.group(3)) * 60 + int(match.group(4))
+    if int(match.group(1)) > 23 or int(match.group(3)) > 23:
+        raise ValueError("Часы должны быть от 0 до 23")
+    if int(match.group(2)) > 59 or int(match.group(4)) > 59:
+        raise ValueError("Минуты должны быть от 0 до 59")
+    return quiet_from, quiet_to
 
 
 def is_quiet(now_utc: int, quiet_from: int, quiet_to: int, tz: str = "Europe/Moscow") -> bool:

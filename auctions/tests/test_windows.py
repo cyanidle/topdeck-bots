@@ -6,11 +6,53 @@ from datetime import datetime, timezone
 from topbot.windows import (
     decide_quiet,
     due_window,
+    format_quiet,
     humanize_remaining,
     is_quiet,
+    parse_quiet,
 )
 
 WINDOWS = (86400, 10800, 3600, 900)
+
+
+class ParseQuietTest(unittest.TestCase):
+    def test_night_range(self):
+        self.assertEqual(parse_quiet("23:00-09:00"), (1380, 540))
+
+    def test_single_digit_hours_and_spaces(self):
+        self.assertEqual(parse_quiet(" 9:05 - 23:45 "), (545, 1425))
+
+    def test_en_dash_and_em_dash_are_accepted(self):
+        self.assertEqual(parse_quiet("23:00–09:00"), (1380, 540))
+        self.assertEqual(parse_quiet("23:00—09:00"), (1380, 540))
+
+    def test_equal_borders_mean_disabled(self):
+        self.assertEqual(parse_quiet("00:00-00:00"), (0, 0))
+
+    def test_full_day(self):
+        self.assertEqual(parse_quiet("00:00-23:59"), (0, 1439))
+
+    def test_hour_out_of_range_is_rejected(self):
+        with self.assertRaises(ValueError):
+            parse_quiet("24:00-09:00")
+        with self.assertRaises(ValueError):
+            parse_quiet("23:00-24:30")
+
+    def test_minute_out_of_range_is_rejected(self):
+        with self.assertRaises(ValueError):
+            parse_quiet("23:60-09:00")
+
+    def test_malformed_input_is_rejected(self):
+        for text in ("23:00", "23-09", "вечер-утро", "", "23:00-09:00-12:00"):
+            with self.assertRaises(ValueError, msg=text):
+                parse_quiet(text)
+
+    def test_format_round_trip(self):
+        for quiet_from, quiet_to in ((1380, 540), (0, 0), (545, 1425)):
+            self.assertEqual(parse_quiet(format_quiet(quiet_from, quiet_to)), (quiet_from, quiet_to))
+
+    def test_format_is_zero_padded(self):
+        self.assertEqual(format_quiet(0, 1439), "00:00–23:59")
 
 
 class DueWindowTest(unittest.TestCase):
@@ -73,6 +115,9 @@ def msk(year, month, day, hour, minute=0):
 
 
 class QuietTest(unittest.TestCase):
+    def test_equal_borders_are_never_quiet(self):
+        self.assertFalse(is_quiet(msk(2026, 11, 16, 3, 0), 0, 0))
+
     def test_midnight_is_quiet(self):
         self.assertTrue(is_quiet(msk(2026, 11, 16, 0, 30), 1380, 540))
 

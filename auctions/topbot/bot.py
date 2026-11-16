@@ -28,7 +28,7 @@ from .models import Card, Offer, WatchlistCard
 from .notifier import Notifier
 from .poller import ensure_matches
 from .prices import refresh_cards
-from .windows import humanize_remaining, msk_clock
+from .windows import format_quiet, humanize_remaining, msk_clock, parse_quiet
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -56,6 +56,10 @@ ctx = Context()
 
 
 class AddFlow(StatesGroup):
+    waiting = State()
+
+
+class QuietFlow(StatesGroup):
     waiting = State()
 
 
@@ -674,18 +678,17 @@ def _settings_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
     for window, label in labels.items():
         mark = "✅" if window in user.windows else "⬜"
         lines.append(f"{mark} {label}")
-    qf_h, qf_m = divmod(user.quiet_from, 60)
-    qt_h, qt_m = divmod(user.quiet_to, 60)
-    lines.append(f"Тихие часы: {qf_h:02d}:{qf_m:02d}–{qt_h:02d}:{qt_m:02d} (МСК)")
+    lines.append(f"Тихие часы: {format_quiet(user.quiet_from, user.quiet_to)} (МСК)")
     lines.append("Окно 15 минут приходит даже в тихие часы.")
     if user.muted_until and user.muted_until > int(time.time()):
         lines.append(f"Уведомления на паузе до {msk_clock(user.muted_until)} (МСК) — снять: /mute off")
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
             text=("✅ " if window in user.windows else "⬜ ") + label,
             callback_data=f"win:{window}",
-        ) for window, label in labels.items()
-    ]])
+        ) for window, label in labels.items()],
+        [InlineKeyboardButton(text="🌙 Тихие часы", callback_data="quiet:edit")],
+    ])
     return "\n".join(lines), keyboard
 
 
@@ -714,13 +717,15 @@ async def cmd_mute(message: Message) -> None:
 
 
 @router.message(Command("settings"))
-async def cmd_settings(message: Message) -> None:
+async def cmd_settings(message: Message, state: FSMContext) -> None:
+    await state.clear()
     text, keyboard = _settings_view(message.from_user.id)
     await message.answer(text, reply_markup=keyboard)
 
 
 @router.callback_query(F.data.startswith("win:"))
-async def cb_toggle_window(callback: CallbackQuery) -> None:
+async def cb_toggle_window(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
     window = int(callback.data.split(":", 1)[1])
     db = _database()
     user = db.ensure_user(callback.from_user.id, callback.from_user.username, callback.from_user.first_name)
@@ -749,7 +754,8 @@ async def cmd_help(message: Message) -> None:
         "имя карты ведёт на ближайший аукцион, ссылки «цены» (сколько карта стоит у магазинов "
         "и продавцов) и «удалить» — прямо в тексте.\n"
         "• /price <карта> — то же, что ссылка «цены», но для любой карты.\n"
-        "• «⚙️ Настройки» — окна уведомлений (1д/3ч/1ч/15м).\n"
+        "• «⚙️ Настройки» — окна уведомлений (1д/3ч/1ч/15м) и кнопка «🌙 Тихие часы» "
+        "(пришлите диапазон вида 23:00-09:00, 00:00-00:00 — выключить).\n"
         "• /mute 1h|8h|off — пауза уведомлений (например, на ночь или в отпуске).\n"
         "Уведомления приходят автоматически, когда лот с вашей картой подходит к концу.",
         reply_markup=main_menu(),
@@ -763,7 +769,8 @@ async def btn_add(message: Message, state: FSMContext) -> None:
 
 
 @router.message(F.text == BUTTON_LIST)
-async def btn_list(message: Message) -> None:
+async def btn_list(message: Message, state: FSMContext) -> None:
+    await state.clear()
     await _typing(message)
     await message.answer(await _watchlist_view(message.from_user.id), parse_mode="HTML")
 
@@ -777,9 +784,41 @@ async def cb_card_price(callback: CallbackQuery) -> None:
 
 
 @router.message(F.text == BUTTON_SETTINGS)
-async def btn_settings(message: Message) -> None:
+async def btn_settings(message: Message, state: FSMContext) -> None:
+    await state.clear()
     text, keyboard = _settings_view(message.from_user.id)
     await message.answer(text, reply_markup=keyboard)
+
+
+QUIET_HINT = ("Пришлите тихие часы в формате ЧЧ:ММ-ЧЧ:ММ по МСК, например 23:00-09:00.\n"
+              "Выключить тихие часы: 00:00-00:00. Выйти — /settings или кнопка меню.")
+
+
+@router.callback_query(F.data == "quiet:edit")
+async def cb_quiet_edit(callback: CallbackQuery, state: FSMContext) -> None:
+    await _answer(callback)
+    if callback.message:
+        await callback.message.answer(QUIET_HINT)
+    await state.set_state(QuietFlow.waiting)
+
+
+@router.message(QuietFlow.waiting, F.text, ~F.text.startswith("/"), ~F.text.in_(MENU_TEXTS))
+async def on_quiet_input(message: Message, state: FSMContext) -> None:
+    try:
+        quiet_from, quiet_to = parse_quiet(message.text or "")
+    except ValueError as exc:
+        await message.answer(f"{exc}.\n{QUIET_HINT}")
+        return
+    db = _database()
+    user = db.ensure_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
+    db.update_quiet(user.id, quiet_from, quiet_to)
+    await state.clear()
+    log.info("quiet hours updated", extra={"user_id": user.id, "quiet_from": quiet_from,
+                                           "quiet_to": quiet_to})
+    summary = ("Тихие часы выключены — уведомления приходят круглосуточно." if quiet_from == quiet_to
+               else f"Тихие часы: {format_quiet(quiet_from, quiet_to)} (МСК).")
+    text, keyboard = _settings_view(user.id)
+    await message.answer(f"{summary}\n\n{text}", reply_markup=keyboard)
 
 
 @router.message(F.text, ~F.text.startswith("/"), ~F.text.in_(MENU_TEXTS))
