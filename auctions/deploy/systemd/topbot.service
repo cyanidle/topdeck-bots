@@ -1,0 +1,16 @@
+[Unit]
+Description=topbot — TG-бот watchlist'ов карт MTG (auctions)
+After=network-online.target xray.service
+Wants=network-online.target xray.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/topdeck-bots/auctions
+ExecStart=%h/topdeck-bots/auctions/topbot.sh
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

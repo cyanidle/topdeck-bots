@@ -1,0 +1,10 @@
+[Unit]
+Description=Бэкап БД topbot в /data/backups/topdeck-bots (храним 5 копий)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/topdeck-bots/auctions
+ExecStart=%h/topdeck-bots/auctions/.venv/bin/python tools/backup_db.py --db data/topbot.sqlite3 --out /data/backups/topdeck-bots --keep 5
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

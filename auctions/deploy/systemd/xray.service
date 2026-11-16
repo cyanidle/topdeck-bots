@@ -1,0 +1,15 @@
+[Unit]
+Description=Xray туннель для topbot (SOCKS 127.0.0.1:1080, HTTP 127.0.0.1:1081)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/topdeck-bots/auctions
+ExecStart=%h/vendor/xray run -c %h/topdeck-bots/auctions/deploy/xray.config.json
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target

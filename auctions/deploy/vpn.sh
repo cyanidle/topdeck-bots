@@ -2,6 +2,7 @@
 # Управление встроенным VPN-ядром (Xray). Бинарник ставится вручную на хосте.
 # Поиск бинарника: $XRAY_BIN → ./vendor/xray → /usr/local/bin/xray → PATH.
 #   ./deploy/vpn.sh up        — отрендерить конфиг (если нужно) и запустить
+#   ./deploy/vpn.sh render    — только отрендерить конфиг из подписки, без запуска ядра
 #   ./deploy/vpn.sh refresh   — заново получить подписку и перезапустить
 #   ./deploy/vpn.sh status    — состояние процесса + проверка api.telegram.org через SOCKS
 #   ./deploy/vpn.sh logs      — хвост лога
@@ -91,6 +92,12 @@ cmd_refresh() {
     cmd_up
 }
 
+cmd_render() {
+    load_env
+    render_config
+    echo "config rendered: $CONFIG"
+}
+
 cmd_down() {
     if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
         kill "$(cat "$PIDFILE")" 2>/dev/null || true
@@ -122,9 +129,10 @@ cmd_status() {
 
 case "${1:-status}" in
     up) cmd_up ;;
+    render) cmd_render ;;
     down) cmd_down ;;
     refresh) cmd_refresh ;;
     status) cmd_status ;;
     logs) tail -n "${2:-50}" "$LOG" 2>/dev/null || echo "no log yet: $LOG" ;;
-    *) echo "usage: $0 {up|down|refresh|status|logs}" >&2; exit 2 ;;
+    *) echo "usage: $0 {up|render|down|refresh|status|logs}" >&2; exit 2 ;;
 esac

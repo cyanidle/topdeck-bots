@@ -146,6 +146,41 @@ cp .env.example .env        # BOT_TOKEN, TD_PROXY_SUB_URL, ADMIN_TG_IDS, chmod 6
 
 Проверки: `./deploy/vpn.sh status` → `api.telegram.org via 127.0.0.1:1080 -> 200/404`; бот — `/status` (только админ), `/healthz` и `/admin`. Обновление узла: `./deploy/vpn.sh refresh` (подписка могла сменить `sni`/ключи).
 
+### Деплой на сервер: user-юниты systemd
+
+Как развернуть бота на отдельном хосте (шаблоны юнитов — в репозитории, `deploy/systemd/`; пути в них `%h/topdeck-bots/...`, поэтому репозиторий должен лежать в `~/topdeck-bots`, бот — в `~/topdeck-bots/auctions`):
+
+```bash
+git clone <repo> ~/topdeck-bots                                  # или rsync рабочей копии
+cd ~/topdeck-bots/auctions
+python3 -m venv .venv && .venv/bin/pip install -e '.[bot,web]'   # bot: aiogram+aiohttp-socks, web: fastapi/uvicorn для /healthz
+cp .env.example .env && chmod 600 .env                           # BOT_TOKEN, TD_PROXY_SUB_URL, ADMIN_TG_IDS, WEB_PORT
+mkdir -p ~/vendor && cp /path/to/xray ~/vendor/xray && chmod +x ~/vendor/xray
+./deploy/vpn.sh render                                           # только отрендерить deploy/xray.config.json из подписки, без запуска ядра
+mkdir -p /data/backups/topdeck-bots
+./deploy/systemd/install.sh --now                                # юниты в ~/.config/systemd/user + daemon-reload + enable + enable-linger
+```
+
+* `xray.service` — `Type=simple`, `%h/vendor/xray run -c %h/topdeck-bots/auctions/deploy/xray.config.json`, `After=`/`Wants=network-online.target`, `Restart=on-failure`, `RestartSec=5`. Конфиг в git не хранится (`.gitignore`), поэтому на чистом хосте его надо отрендерить заранее (`vpn.sh render` или `vpn.sh refresh`) либо положить готовый файл. Под systemd не запускать ещё и `./deploy/vpn.sh up`: `vpn.sh` демонизирует ядро сам и пишет `data/xray.pid`, из-за чего два процесса подерутся за порты 1080/1081; `vpn.sh status`/`logs` при этом остаются рабочими, но pid-файла нет, поэтому `status` покажет `xray: stopped` (SOCKS-проверку Telegram он всё равно делает).
+* `topbot.service` — `Type=simple`, `WorkingDirectory=%h/topdeck-bots/auctions`, `ExecStart=…/topbot.sh` (скрипт делает `exec python -m topbot`), `After=`/`Wants=xray.service`, `Restart=on-failure`, `RestartSec=10`, `KillSignal=SIGTERM`, `TimeoutStopSec=30`. `.env` юнит не читает: его разбирает сам бот (`Settings.from_env`), поэтому токен и прокси живут в одном месте.
+* `topbot-backup.timer` — ежедневно в 04:30 (`Persistent=true`), oneshot `topbot-backup.service` вызывает `tools/backup_db.py --db data/topbot.sqlite3 --out /data/backups/topdeck-bots --keep 5`: hot-backup через `sqlite3.Connection.backup` (работает на живой WAL-базе), `PRAGMA integrity_check` на копии, атомарная замена `.part` → `.sqlite3`, права `0600`, имена `topbot-YYYYmmdd-HHMMSS.sqlite3`, хранятся 5 последних (ротация трогает только файлы этого префикса).
+
+Проверки и восстановление:
+
+```bash
+systemctl --user status topbot xray topbot-backup.timer
+journalctl --user -u topbot -f
+curl -sS 127.0.0.1:8085/healthz                  # порт — WEB_PORT из .env
+systemctl --user start topbot-backup.service      # прогнать бэкап вручную
+ls -la /data/backups/topdeck-bots/
+systemctl --user stop topbot.service              # восстановление — только при остановленном боте
+rm -f data/topbot.sqlite3-wal data/topbot.sqlite3-shm
+cp /data/backups/topdeck-bots/topbot-YYYYmmdd-HHMMSS.sqlite3 data/topbot.sqlite3
+systemctl --user start topbot.service
+```
+
+Порт `/healthz` берётся из `.env` (`WEB_BIND`/`WEB_PORT`, по умолчанию `127.0.0.1:8080`); если на хосте 8080 уже занят (например, десятком других сервисов), поставьте свободный — на боевом сервере это `WEB_PORT=8085`.
+
 ## 7. Секреты и конфигурация
 
 `.env` (в репозитории только `.env.example`):
