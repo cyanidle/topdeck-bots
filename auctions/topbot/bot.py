@@ -116,7 +116,10 @@ async def _add_card(user_id: int, name: str) -> tuple[bool, str]:
     if ctx.scryfall is not None:
         card = await ctx.scryfall.named_exact(name) or await ctx.scryfall.named_fuzzy(name)
         if card is not None and not card.name_ru:
-            card = replace(card, name_ru=await ctx.scryfall.localized_name(card.name_en))
+            try:
+                card = replace(card, name_ru=await ctx.scryfall.localized_name(card.name_en))
+            except Exception:
+                log.warning("localized name lookup failed", extra={"card": card.name_en}, exc_info=True)
     card = card or Card(name_en=name)
     db = _database()
     db.ensure_user(user_id)
@@ -124,7 +127,7 @@ async def _add_card(user_id: int, name: str) -> tuple[bool, str]:
                              oracle_id=card.oracle_id, scryfall_id=card.scryfall_id,
                              set_code=card.set_code, collector_no=card.collector_no,
                              image_url=card.image_url)
-    _catalog().add_local_card(card.name_en, card.name_ru)
+    _catalog().remember_card_name(card.name_en, card.name_ru)
     added = db.add_to_watchlist(user_id, card_id)
     db.invalidate_lot_matches()
     ensure_matches(db)
@@ -145,7 +148,7 @@ async def _remember(cards: list[Card]) -> list[str]:
             continue
         if card.name_en not in names:
             names.append(card.name_en)
-        _catalog().add_local_card(card.name_en, card.name_ru)
+        _catalog().remember_card_name(card.name_en, card.name_ru)
     return names
 
 

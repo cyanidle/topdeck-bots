@@ -104,6 +104,11 @@ class LocalizedScryfall:
         return self.names.get(name_en)
 
 
+class FailingScryfall:
+    async def localized_name(self, name_en: str) -> str | None:
+        raise TimeoutError("proxy timed out")
+
+
 class FillRussianNamesTest(unittest.IsolatedAsyncioTestCase):
     async def test_fills_watchlist_cards_and_invalidates_matches(self):
         db = Database(":memory:")
@@ -136,6 +141,39 @@ class FillRussianNamesTest(unittest.IsolatedAsyncioTestCase):
         catalog = CardCatalog(db, scryfall)
         self.assertEqual(await catalog.fill_russian_names(), 0)
         self.assertEqual(scryfall.calls, [])
+        db.close()
+
+    async def test_missing_printing_is_not_requested_again(self):
+        db = Database(":memory:")
+        db.ensure_user(42, "tester")
+        card_id = db.upsert_card("Ouroboroid", "ouroboroid")
+        db.add_to_watchlist(42, card_id)
+        scryfall = LocalizedScryfall({})
+        catalog = CardCatalog(db, scryfall)
+        self.assertEqual(await catalog.fill_russian_names(), 0)
+        self.assertEqual(await catalog.fill_russian_names(), 0)
+        self.assertEqual(scryfall.calls, ["Ouroboroid"])
+        db.close()
+
+    async def test_transient_failure_is_retried_on_the_next_run(self):
+        db = Database(":memory:")
+        db.ensure_user(42, "tester")
+        card_id = db.upsert_card("Bayou", "bayou")
+        db.add_to_watchlist(42, card_id)
+        catalog = CardCatalog(db, FailingScryfall())
+        self.assertEqual(await catalog.fill_russian_names(), 0)
+        self.assertEqual(catalog._without_ru(), set())
+        db.close()
+
+    def test_remember_card_name_updates_card_and_name_catalog(self):
+        db = Database(":memory:")
+        db.upsert_card("Ouroboroid", "ouroboroid")
+        catalog = CardCatalog(db)
+        catalog.remember_card_name("Ouroboroid", "Уробороид")
+        row = db.conn.execute("SELECT name_ru FROM cards WHERE name_norm='ouroboroid'").fetchone()
+        self.assertEqual(row["name_ru"], "Уробороид")
+        names = {name["name"] for name in db.conn.execute("SELECT name FROM card_names").fetchall()}
+        self.assertIn("Уробороид", names)
         db.close()
 
 

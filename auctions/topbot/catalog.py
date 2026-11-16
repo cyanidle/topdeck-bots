@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import json
+import logging
 import time
 
 from .matching import normalize
 
+log = logging.getLogger(__name__)
+
 CATALOG_TTL_S = 7 * 86400
 META_KEY = "card_names_synced_at"
+NO_RU_KEY = "cards_without_ru"
 
 
 def score(name_norm: str, query_norm: str) -> int:
@@ -74,17 +79,44 @@ class CardCatalog:
             "SELECT DISTINCT c.id, c.name_en FROM cards c JOIN watchlist w ON w.card_id = c.id"
             " WHERE c.name_ru IS NULL OR c.name_ru = '' ORDER BY c.name_en"
         ).fetchall()
+        without_ru = self._without_ru()
         filled = 0
         for row in rows:
-            name_ru = await self.scryfall.localized_name(row["name_en"])
-            if not name_ru:
+            if row["name_en"] in without_ru:
                 continue
-            self.db.conn.execute("UPDATE cards SET name_ru=? WHERE id=?", (name_ru, int(row["id"])))
-            self.add_local_card(row["name_en"], name_ru)
+            try:
+                name_ru = await self.scryfall.localized_name(row["name_en"])
+            except Exception:
+                log.warning("localized name lookup failed", extra={"card": row["name_en"]}, exc_info=True)
+                continue
+            if not name_ru:
+                without_ru.add(row["name_en"])
+                continue
+            self.remember_card_name(row["name_en"], name_ru)
             filled += 1
+        self._store_without_ru(without_ru)
         if filled:
             self.db.invalidate_lot_matches()
         return filled
+
+    def remember_card_name(self, name_en: str, name_ru: str | None) -> None:
+        if not name_ru:
+            return
+        self.db.conn.execute(
+            "UPDATE cards SET name_ru=? WHERE name_norm=? AND (name_ru IS NULL OR name_ru='')",
+            (name_ru, normalize(name_en)),
+        )
+        self.add_local_card(name_en, name_ru)
+
+    def _without_ru(self) -> set[str]:
+        row = self.db.conn.execute("SELECT value FROM meta WHERE key=?", (NO_RU_KEY,)).fetchone()
+        return set(json.loads(row["value"])) if row else set()
+
+    def _store_without_ru(self, names: set[str]) -> None:
+        self.db.conn.execute(
+            "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (NO_RU_KEY, json.dumps(sorted(names), ensure_ascii=False)),
+        )
 
     def search(self, query: str, limit: int = 8) -> list[str]:
         query_norm = normalize(query)

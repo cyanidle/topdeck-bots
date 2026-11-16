@@ -17,7 +17,7 @@ SPACES = re.compile(r"\s+")
 PREFIX_MIN_LEN = 6
 PREFIX_CONFIDENCE = 0.95
 FUZZY_MIN_LEN = 6
-MATCH_VERSION = 2
+MATCH_VERSION = 3
 FLAG_WORDS = {
     "foil", "фойл", "etched", "borderless", "extended", "art", "surge", "promo", "showcase", "retro",
     "ру", "ru", "en", "eng", "jp", "fra", "it", "sp", "nm", "hp", "mp", "pl", "gd", "lp", "mint",

@@ -111,7 +111,7 @@ CREATE TABLE poll_runs (
     error           TEXT
 );
 
-CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);  -- schema_version, match_version, last_offer_poll, ...
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);  -- schema_version, match_version, cards_without_ru, last_offer_poll, ...
 ```
 
 ## Замечания
