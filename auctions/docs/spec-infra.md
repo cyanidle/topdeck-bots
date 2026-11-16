@@ -158,7 +158,16 @@ cp .env.example .env && chmod 600 .env                           # BOT_TOKEN, TD
 mkdir -p ~/vendor && cp /path/to/xray ~/vendor/xray && chmod +x ~/vendor/xray
 ./deploy/vpn.sh render                                           # только отрендерить deploy/xray.config.json из подписки, без запуска ядра
 mkdir -p /data/backups/topdeck-bots
-./deploy/systemd/install.sh --now                                # юниты в ~/.config/systemd/user + daemon-reload + enable + enable-linger
+./deploy/systemd/install.sh                                      # юниты в ~/.config/systemd/user, daemon-reload, enable, linger, старт таймера
+./deploy/systemd/install.sh --now                                # то же + перезапуск xray и бота
+```
+
+Если в системе нет пакета `python3-venv` (на Ubuntu 24.04+/25.04 `ensurepip` вырезан, а `sudo apt install python3.13-venv` недоступен) — venv собирается без pip, дальше pip бутстрапится официальным скриптом:
+
+```bash
+python3 -m venv --without-pip .venv
+curl -sS -o /tmp/get-pip.py https://bootstrap.pypa.io/get-pip.py && .venv/bin/python /tmp/get-pip.py
+.venv/bin/python -m pip install -e '.[bot,web]'
 ```
 
 * `xray.service` — `Type=simple`, `%h/vendor/xray run -c %h/topdeck-bots/auctions/deploy/xray.config.json`, `After=`/`Wants=network-online.target`, `Restart=on-failure`, `RestartSec=5`. Конфиг в git не хранится (`.gitignore`), поэтому на чистом хосте его надо отрендерить заранее (`vpn.sh render` или `vpn.sh refresh`) либо положить готовый файл. Под systemd не запускать ещё и `./deploy/vpn.sh up`: `vpn.sh` демонизирует ядро сам и пишет `data/xray.pid`, из-за чего два процесса подерутся за порты 1080/1081; `vpn.sh status`/`logs` при этом остаются рабочими, но pid-файла нет, поэтому `status` покажет `xray: stopped` (SOCKS-проверку Telegram он всё равно делает).

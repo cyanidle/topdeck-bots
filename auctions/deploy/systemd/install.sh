@@ -21,12 +21,13 @@ done
 
 systemctl --user daemon-reload
 systemctl --user enable "${ENABLE[@]}"
+systemctl --user start topbot-backup.timer
 loginctl enable-linger "$USER" || echo "WARN: не удалось включить linger — юниты остановятся после logout" >&2
 
 if [ "${1:-}" = "--now" ]; then
     systemctl --user restart xray.service
     systemctl --user restart topbot.service
-    systemctl --user restart topbot-backup.timer
 fi
 
 systemctl --user --no-pager list-units 'topbot*' 'xray*'
+systemctl --user --no-pager list-timers topbot-backup.timer
