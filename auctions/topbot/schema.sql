@@ -13,8 +13,6 @@ CREATE TABLE IF NOT EXISTS users (
     tz             TEXT NOT NULL DEFAULT 'Europe/Moscow',
     lang           TEXT NOT NULL DEFAULT 'ru',
     windows_json   TEXT NOT NULL DEFAULT '[86400,10800,3600,900]',
-    quiet_from     INTEGER NOT NULL DEFAULT 1380,
-    quiet_to       INTEGER NOT NULL DEFAULT 540,
     new_lot_alerts INTEGER NOT NULL DEFAULT 0,
     muted_until    INTEGER,
     created_at     INTEGER NOT NULL,

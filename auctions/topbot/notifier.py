@@ -5,7 +5,6 @@ import time
 from typing import Awaitable, Callable
 
 from .db import Database
-from .windows import decide_quiet
 
 log = logging.getLogger(__name__)
 
@@ -21,15 +20,15 @@ class Notifier:
     async def notify(self, user, kind: str, ref_id: int, window_s: int | None,
                      text: str, payload: dict | None = None) -> bool:
         now = int(time.time())
-        decision = decide_quiet(now, user, window_s)
+        muted = bool(user.muted_until and user.muted_until > now)
         log.info("notify decision", extra={"user_id": user.id, "kind": kind, "ref_id": ref_id,
-                                           "window_s": window_s, "decision": decision.reason})
-        if not decision.send_now:
+                                           "window_s": window_s, "decision": "muted" if muted else "ok"})
+        if muted:
             self.db.reserve_notification(user.id, kind, ref_id, window_s, payload)
             self.db.conn.execute(
-                "UPDATE notifications SET state=? WHERE user_id=? AND kind=? AND ref_id=?"
+                "UPDATE notifications SET state='muted' WHERE user_id=? AND kind=? AND ref_id=?"
                 " AND COALESCE(window_s,0)=?",
-                (decision.reason, user.id, kind, ref_id, window_s or 0),
+                (user.id, kind, ref_id, window_s or 0),
             )
             return False
         if self.db.count_sent_last_hour(user.id) >= self.max_per_hour:

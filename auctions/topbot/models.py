@@ -91,8 +91,6 @@ class User:
     id: int
     username: str | None
     windows: tuple[int, ...]
-    quiet_from: int
-    quiet_to: int
     muted_until: int | None
 
 

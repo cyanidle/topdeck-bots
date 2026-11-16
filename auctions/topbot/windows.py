@@ -1,12 +1,6 @@
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
-
-URGENT_WINDOW = 900
-
-QUIET_PATTERN = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*[-–—]\s*(\d{1,2}):(\d{2})\s*$")
 
 
 def due_window(remaining_s: int, windows: tuple[int, ...], sent: set[int]) -> int | None:
@@ -47,52 +41,9 @@ def humanize_remaining(remaining_s: int) -> str:
     return f"{days} д {hours} ч" if hours else f"{days} д"
 
 
-def format_quiet(quiet_from: int, quiet_to: int) -> str:
-    return f"{quiet_from // 60:02d}:{quiet_from % 60:02d}–{quiet_to // 60:02d}:{quiet_to % 60:02d}"
-
-
-def parse_quiet(text: str) -> tuple[int, int]:
-    """Разбирает «ЧЧ:ММ-ЧЧ:ММ» в минуты от полуночи; одинаковые границы значат «тихие часы выключены»."""
-    match = QUIET_PATTERN.match(text or "")
-    if match is None:
-        raise ValueError("Не понял время, нужен формат ЧЧ:ММ-ЧЧ:ММ, например 23:00-09:00")
-    quiet_from = int(match.group(1)) * 60 + int(match.group(2))
-    quiet_to = int(match.group(3)) * 60 + int(match.group(4))
-    if int(match.group(1)) > 23 or int(match.group(3)) > 23:
-        raise ValueError("Часы должны быть от 0 до 23")
-    if int(match.group(2)) > 59 or int(match.group(4)) > 59:
-        raise ValueError("Минуты должны быть от 0 до 59")
-    return quiet_from, quiet_to
-
-
-def is_quiet(now_utc: int, quiet_from: int, quiet_to: int, tz: str = "Europe/Moscow") -> bool:
-    local = datetime.fromtimestamp(now_utc, tz=timezone.utc).astimezone(offset_for(tz))
-    minute = local.hour * 60 + local.minute
-    if quiet_from == quiet_to:
-        return False
-    if quiet_from < quiet_to:
-        return quiet_from <= minute < quiet_to
-    return minute >= quiet_from or minute < quiet_to
-
-
 def offset_for(tz: str) -> timezone:
     if tz in ("Europe/Moscow", "MSK", "UTC+3"):
         return timezone(timedelta(hours=3))
     if tz in ("UTC", "Etc/UTC"):
         return timezone.utc
     raise ValueError(f"unsupported tz: {tz}")
-
-
-@dataclass(frozen=True)
-class QuietDecision:
-    send_now: bool
-    reason: str
-
-
-def decide_quiet(now_utc: int, user, window_s: int | None, urgent_bypass: bool = True) -> QuietDecision:
-    if getattr(user, "muted_until", None) and user.muted_until and user.muted_until > now_utc:
-        return QuietDecision(send_now=False, reason="muted")
-    quiet = is_quiet(now_utc, user.quiet_from, user.quiet_to)
-    if quiet and not (urgent_bypass and window_s is not None and window_s <= URGENT_WINDOW):
-        return QuietDecision(send_now=False, reason="quiet_hours")
-    return QuietDecision(send_now=True, reason="ok")

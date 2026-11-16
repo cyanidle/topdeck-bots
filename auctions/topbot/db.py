@@ -51,6 +51,10 @@ class Database:
         watchlist_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(watchlist)")}
         if "price_threshold" in watchlist_columns:
             self.conn.execute("ALTER TABLE watchlist DROP COLUMN price_threshold")
+        user_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(users)")}
+        for column in ("quiet_from", "quiet_to"):
+            if column in user_columns:
+                self.conn.execute(f"ALTER TABLE users DROP COLUMN {column}")
         self.conn.execute("DROP TABLE IF EXISTS offers_snapshot")
         self.conn.execute("DROP TABLE IF EXISTS card_price_stats")
 
@@ -88,8 +92,6 @@ class Database:
             id=row["id"],
             username=row["username"],
             windows=tuple(json.loads(row["windows_json"])),
-            quiet_from=row["quiet_from"],
-            quiet_to=row["quiet_to"],
             muted_until=row["muted_until"],
         )
 
@@ -142,10 +144,6 @@ class Database:
     def update_windows(self, user_id: int, windows: tuple[int, ...]) -> None:
         self.conn.execute("UPDATE users SET windows_json=? WHERE id=?",
                           (json.dumps(sorted(windows, reverse=True)), user_id))
-
-    def update_quiet(self, user_id: int, quiet_from: int, quiet_to: int) -> None:
-        self.conn.execute("UPDATE users SET quiet_from=?, quiet_to=? WHERE id=?",
-                          (quiet_from, quiet_to, user_id))
 
     def update_mute(self, user_id: int, muted_until: int | None) -> None:
         self.conn.execute("UPDATE users SET muted_until=? WHERE id=?", (muted_until, user_id))

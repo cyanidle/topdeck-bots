@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -204,11 +205,33 @@ class WatchlistCountsTest(unittest.TestCase):
         self.db.update_windows(42, (3600, 900))
         self.assertEqual(self.db.get_user(42).windows, (3600, 900))
 
-    def test_quiet_update(self):
-        self.db.ensure_user(42)
-        self.db.update_quiet(42, 60, 120)
-        user = self.db.get_user(42)
-        self.assertEqual((user.quiet_from, user.quiet_to), (60, 120))
+
+class LegacyUsersMigrationTest(unittest.TestCase):
+    def test_quiet_columns_are_dropped_from_an_old_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "legacy.sqlite3")
+            conn = sqlite3.connect(path)
+            conn.executescript(
+                "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, first_name TEXT,"
+                " tz TEXT NOT NULL DEFAULT 'Europe/Moscow', lang TEXT NOT NULL DEFAULT 'ru',"
+                " windows_json TEXT NOT NULL DEFAULT '[86400,10800,3600,900]',"
+                " quiet_from INTEGER NOT NULL DEFAULT 1380, quiet_to INTEGER NOT NULL DEFAULT 540,"
+                " new_lot_alerts INTEGER NOT NULL DEFAULT 0, muted_until INTEGER,"
+                " created_at INTEGER NOT NULL, last_seen_at INTEGER);"
+                "INSERT INTO users(id, created_at) VALUES(7, 0);"
+            )
+            conn.commit()
+            conn.close()
+            db = Database(path)
+            try:
+                columns = {row["name"] for row in db.conn.execute("PRAGMA table_info(users)")}
+                self.assertNotIn("quiet_from", columns)
+                self.assertNotIn("quiet_to", columns)
+                user = db.get_user(7)
+                self.assertEqual(user.id, 7)
+                self.assertEqual(user.windows, (86400, 10800, 3600, 900))
+            finally:
+                db.close()
 
 
 class CompositionStorageTest(unittest.TestCase):

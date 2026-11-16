@@ -43,8 +43,6 @@ class Settings:
     poll_interval_s: int = 840
     prices_interval_s: int = 900
     windows: tuple[int, ...] = DEFAULT_WINDOWS
-    quiet_from: int = 23 * 60
-    quiet_to: int = 9 * 60
     throttle_s: float = 1.5
     log_level: str = "INFO"
     log_format: str = "text"
@@ -68,7 +66,7 @@ class Settings:
             )
         if raw.get("SCRYFALL_ENABLED"):
             settings.scryfall_enabled = raw["SCRYFALL_ENABLED"] not in ("0", "false", "no")
-        for name in ("web_port", "poll_interval_s", "prices_interval_s", "quiet_from", "quiet_to"):
+        for name in ("web_port", "poll_interval_s", "prices_interval_s"):
             key = name.upper()
             if raw.get(key):
                 setattr(settings, name, int(raw[key]))

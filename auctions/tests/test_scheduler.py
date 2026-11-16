@@ -50,7 +50,6 @@ class SchedulerTestBase(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.db = Database(":memory:")
         self.db.ensure_user(42, "tester")
-        self.db.update_quiet(42, 0, 0)
         self.card = self.db.upsert_card("Bayou", "bayou")
         self.bolt = self.db.upsert_card("Lightning Bolt", "lightning bolt")
         self.db.add_to_watchlist(42, self.card)
@@ -194,31 +193,6 @@ class DelayTest(SchedulerTestBase):
             "INSERT INTO notifications(user_id, kind, ref_id, window_s, state, created_at)"
             " VALUES(42, 'auction_window', 1, 900, 'sent', ?)", (NOW,))
         self.assertEqual(self.scheduler.delay(NOW), float(TICK_S))
-
-
-class QuietHoursDeferralTest(SchedulerTestBase):
-    def setUp(self) -> None:
-        super().setUp()
-        self.db.update_quiet(42, 0, 1439)
-
-    async def test_window_is_deferred_not_lost(self):
-        self.add_lot(make_lot(11, "Bayou (3ED, №283)", NOW + 2 * 3600))
-        self.assertEqual(await self.dispatch(NOW + 3600), 0)
-        row = self.db.conn.execute("SELECT state FROM notifications WHERE ref_id=11").fetchone()
-        self.assertEqual(row["state"], "quiet_hours")
-        self.assertEqual(self.db.sent_windows(42, "auction_window", 11), set())
-
-    async def test_deferred_window_is_delivered_after_quiet_hours(self):
-        self.add_lot(make_lot(12, "Bayou (3ED, №283)", NOW + 2 * 3600))
-        await self.dispatch(NOW + 3600)
-        self.assertEqual(self.notifier.sent, [])
-
-        self.db.update_quiet(42, 0, 0)
-        self.assertEqual(await self.dispatch(NOW + 3600 + 300), 1)
-        self.assertIn("Bayou", self.notifier.sent[0][1])
-        row = self.db.conn.execute("SELECT state FROM notifications WHERE ref_id=12").fetchone()
-        self.assertEqual(row["state"], "sent")
-        self.assertEqual(await self.dispatch(NOW + 3600 + 360), 0)
 
 
 class PlannedWindowsTest(SchedulerTestBase):
