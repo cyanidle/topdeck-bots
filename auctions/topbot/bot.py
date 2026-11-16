@@ -9,12 +9,13 @@ from html import escape
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramNetworkError
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup,
                            KeyboardButton, Message, ReplyKeyboardMarkup)
+from aiohttp import ClientError
 
 from .catalog import CardCatalog
 from .clients.topdeck import TopdeckClient, lot_url
@@ -26,6 +27,7 @@ from .messages import money, plural, render_offer_line
 from .models import Card, Offer, WatchlistCard
 from .notifier import Notifier
 from .poller import ensure_matches
+from .prices import refresh_cards
 from .windows import humanize_remaining, msk_clock
 
 log = logging.getLogger(__name__)
@@ -35,6 +37,8 @@ ADD_SPLIT = re.compile(r"[\n;]+")
 COMMA = re.compile(r",")
 QTY = re.compile(r"^\s*\d+\s*[xхXХ]?\s+")
 SUGGEST_LIMIT = 5
+INLINE_OFFERS = 3
+PRICE_ROWS = 10
 TELEGRAM_TIMEOUT_S = 30.0
 CYRILLIC = re.compile(r"[а-яё]", re.I)
 
@@ -62,7 +66,6 @@ COMMANDS = [
     BotCommand(command="list", description="Мой список карт"),
     BotCommand(command="remove", description="Удалить карту"),
     BotCommand(command="price", description="Цены по карте"),
-    BotCommand(command="status", description="Состояние поллера"),
     BotCommand(command="settings", description="Настройки уведомлений"),
     BotCommand(command="mute", description="Пауза уведомлений"),
     BotCommand(command="help", description="Помощь"),
@@ -72,17 +75,16 @@ COMMANDS = [
 BUTTON_ADD = "➕ Добавить"
 BUTTON_LIST = "📋 Список"
 BUTTON_SETTINGS = "⚙️ Настройки"
-BUTTON_STATUS = "ℹ️ Статус"
 
 
-MENU_TEXTS = (BUTTON_ADD, BUTTON_LIST, BUTTON_SETTINGS, BUTTON_STATUS)
+MENU_TEXTS = (BUTTON_ADD, BUTTON_LIST, BUTTON_SETTINGS)
 
 
 def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BUTTON_ADD), KeyboardButton(text=BUTTON_LIST)],
-            [KeyboardButton(text=BUTTON_SETTINGS), KeyboardButton(text=BUTTON_STATUS)],
+            [KeyboardButton(text=BUTTON_SETTINGS)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -287,6 +289,14 @@ async def _process_queries(message: Message, state: FSMContext, queries: list[st
                              reply_markup=_keyboard(candidates))
 
 
+async def _hide_start_message(message: Message) -> None:
+    try:
+        await message.delete()
+    except TelegramAPIError as exc:
+        log.info("start message is not deletable", extra={"message_id": getattr(message, "message_id", None),
+                                                         "error": repr(exc)})
+
+
 async def _handle_deep_link(message: Message, payload: str) -> bool:
     kind, _, raw_id = payload.partition("_")
     if kind not in ("price", "rm") or not raw_id.isdigit():
@@ -310,6 +320,7 @@ async def cmd_start(message: Message) -> None:
     user = message.from_user
     db.ensure_user(user.id, user.username, user.first_name)
     if await _handle_deep_link(message, (message.text or "").partition(" ")[2].strip()):
+        await _hide_start_message(message)
         return
     await message.answer(
         "Этот бот хранит ваш список карт и следит за аукционами на topdeck.ru: как только по карте "
@@ -409,38 +420,95 @@ def _start_link(payload: str) -> str:
     return f"https://t.me/{ctx.bot_username}?start={payload}"
 
 
-def _card_line(card: WatchlistCard) -> str:
+def _best_per_seller(offers: list[Offer]) -> list[Offer]:
+    best: dict[tuple[str, str], Offer] = {}
+    for offer in offers:
+        if offer.cost <= 0:
+            continue
+        key = (offer.seller_name or offer.source or "", offer.eng_name)
+        current = best.get(key)
+        if current is None or offer.cost < current.cost:
+            best[key] = offer
+    return sorted(best.values(), key=lambda offer: offer.cost)
+
+
+def _seller_label(offer: Offer, limit: int = 18) -> str:
+    who = offer.seller_name or offer.source or "—"
+    return who if len(who) <= limit else who[:limit - 1] + "…"
+
+
+def _cheapest_line(offers: list[Offer]) -> str:
+    prices = " · ".join(f"{money(offer.cost)} ₽ {_seller_label(offer)}" for offer in offers)
+    return escape(prices, quote=False)
+
+
+def _lots_line(card: WatchlistCard) -> str:
+    if not card.lots_count:
+        return "лотов нет"
+    parts = [f"{card.lots_count} {plural(card.lots_count, 'лот', 'лота', 'лотов')}"]
+    if card.lots_min_price:
+        parts.append(f"от {money(card.lots_min_price)} ₽")
+    if card.next_end_ts:
+        remaining = int(card.next_end_ts) - int(time.time())
+        if remaining > 0:
+            when = "до конца" if card.lots_count == 1 else "ближайший через"
+            parts.append(f"{when} {humanize_remaining(remaining)}")
+    return " · ".join(parts)
+
+
+def _card_line(card: WatchlistCard, offers: list[Offer]) -> str:
     name = escape(card.name_en, quote=False)
     if card.next_lot_id:
         name = f'<a href="{lot_url(card.next_lot_id)}">{name}</a>'
-    if not card.lots_count:
-        line = f"{name} — лотов нет"
-    else:
-        parts = [f"{card.lots_count} {plural(card.lots_count, 'лот', 'лота', 'лотов')}"]
-        if card.lots_min_price:
-            parts.append(f"от {money(card.lots_min_price)} ₽")
-        if card.next_end_ts:
-            remaining = int(card.next_end_ts) - int(time.time())
-            if remaining > 0:
-                when = "до конца" if card.lots_count == 1 else "ближайший через"
-                parts.append(f"{when} {humanize_remaining(remaining)}")
-        line = f"{name} — " + ", ".join(parts)
+    lines = [f"<b>{name}</b>", _lots_line(card)]
+    if offers:
+        lines.append(f"💰 Цены у продавцов: {_cheapest_line(offers)}")
     actions = " · ".join([
         f'<a href="{_start_link(f"price_{card.card_id}")}">цены</a>',
         f'<a href="{_start_link(f"rm_{card.card_id}")}">удалить</a>',
     ])
-    return f"{line}\n   {actions}"
+    lines.append(f"› {actions}")
+    return "\n".join(lines)
 
 
-def _watchlist_view(user_id: int) -> str:
-    ensure_matches(_database())
-    cards = _database().watchlist_overview(user_id)
+async def _refresh_cards_on_demand(user_id: int, cards: list[Card]) -> bool:
+    if ctx.topdeck is None:
+        raise RuntimeError("topdeck client is not initialised")
+    try:
+        stats = await refresh_cards(ctx.topdeck, _database(), cards, int(time.time()))
+    except (TimeoutError, OSError, ClientError) as exc:
+        log.warning("card prices fetch failed", extra={"user_id": user_id, "cards": len(cards),
+                                                       "error": repr(exc)})
+        return False
+    log.info("card prices fetched on demand", extra={"user_id": user_id, "cards": stats.cards,
+                                                     "requests": stats.requests, "offers": stats.offers})
+    return True
+
+
+async def _watchlist_view(user_id: int) -> str:
+    db = _database()
+    ensure_matches(db)
+    cards = db.watchlist_overview(user_id)
     if not cards:
         return "📋 Watchlist пуст.\n\nДобавьте карты: /add Lightning Bolt — или кнопка «➕ Добавить» в меню."
+    card_ids = [card.card_id for card in cards]
+    prices_failed = False
+    missing = set(db.cards_without_prices(card_ids))
+    if missing:
+        batch = [Card(id=card.card_id, name_en=card.name_en, name_ru=card.name_ru)
+                 for card in cards if card.card_id in missing]
+        prices_failed = not await _refresh_cards_on_demand(user_id, batch)
+    offers = db.top_offers_by_card(card_ids, INLINE_OFFERS)
     with_lots = sum(1 for card in cards if card.lots_count)
-    header = (f"📋 Watchlist: {len(cards)} {plural(len(cards), 'карта', 'карты', 'карт')} · "
+    header = (f"📋 <b>Watchlist</b>: {len(cards)} {plural(len(cards), 'карта', 'карты', 'карт')} · "
               f"с лотами: {with_lots}")
-    return header + "\n\n" + "\n\n".join(_card_line(card) for card in cards)
+    if prices_failed:
+        header += "\n⚠️ цены у продавцов сейчас недоступны — ссылка «цены» повторит запрос"
+    else:
+        synced_at = db.prices_synced_at(card_ids)
+        if synced_at is not None:
+            header += f"\n💰 Прайсы из кэша: {humanize_remaining(max(0, int(time.time()) - synced_at))} назад"
+    return header + "\n\n" + "\n\n".join(_card_line(card, offers.get(card.card_id, [])) for card in cards)
 
 
 async def _send_card_prices(message: Message, user_id: int, card_id: int) -> bool:
@@ -452,14 +520,24 @@ async def _send_card_prices(message: Message, user_id: int, card_id: int) -> boo
     return True
 
 
+async def _typing(message: Message) -> None:
+    try:
+        await message.bot.send_chat_action(message.chat.id, "typing")
+    except TelegramAPIError as exc:
+        log.info("chat action failed", extra={"error": repr(exc)})
+
+
 @router.message(Command("list"))
 async def cmd_list(message: Message) -> None:
-    await message.answer(_watchlist_view(message.from_user.id), parse_mode="HTML")
+    await _typing(message)
+    await message.answer(await _watchlist_view(message.from_user.id), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "list")
 async def cb_list(callback: CallbackQuery) -> None:
-    text = _watchlist_view(callback.from_user.id)
+    if callback.message:
+        await _typing(callback.message)
+    text = await _watchlist_view(callback.from_user.id)
     await _answer(callback)
     if callback.message:
         await callback.message.answer(text, parse_mode="HTML")
@@ -491,30 +569,51 @@ async def cmd_remove(message: Message) -> None:
     await message.answer("Удалено: " + ", ".join(item.name_en for item in matches))
 
 
-async def _send_prices(message: Message, query: str, user_id: int | None = None) -> None:
+def _prices_text(query: str, offers: list[Offer], *, truncated: bool = False,
+                 stamp: str | None = None, age_hint: str | None = None) -> str:
+    lines = [f"Минимальные предложения по «{query}»" + (" (ответ усечён)" if truncated else "")]
+    for offer in offers[:PRICE_ROWS]:
+        lines.append(render_offer_line(offer))
+    if stamp:
+        lines.append(f"Прайсы обновлены: {stamp}")
+    if age_hint:
+        lines.append(f"Забрано из кэша: {age_hint} назад")
+    return "\n".join(lines)
+
+
+async def _live_prices(query: str, user_id: int | None) -> tuple[list[Offer], bool]:
     if ctx.topdeck is None:
         raise RuntimeError("topdeck client is not initialised")
     offers, truncated = await ctx.topdeck.search_singles([query])
-    log.info("price request", extra={"user_id": user_id or message.from_user.id, "query": query,
-                                     "offers": len(offers), "truncated": truncated})
-    if not offers:
-        await message.answer("Предложений не нашлось")
+    log.info("price request live", extra={"user_id": user_id, "query": query,
+                                          "offers": len(offers), "truncated": truncated})
+    return _best_per_seller(offers), truncated
+
+
+async def _send_prices(message: Message, query: str, user_id: int | None = None) -> None:
+    db = _database()
+    card = db.find_card(query)
+    if card is None or card.id is None:
+        best, truncated = await _live_prices(query, user_id or message.from_user.id)
+        if not best:
+            await message.answer("Предложений не нашлось")
+            return
+        await message.answer(_prices_text(query, best, truncated=truncated, stamp=best[0].stamp))
         return
-    best: dict[tuple[str, str], Offer] = {}
-    for offer in offers:
-        if offer.cost <= 0:
-            continue
-        key = (offer.seller_name or offer.source, offer.eng_name)
-        current = best.get(key)
-        if current is None or offer.cost < current.cost:
-            best[key] = offer
-    lines = [f"Минимальные предложения по «{query}»" + (" (ответ усечён)" if truncated else ""),
-             "Сравните с текущей ставкой на аукционе — так видно, выгодный он или нет."]
-    for offer in sorted(best.values(), key=lambda item: item.cost)[:10]:
-        lines.append(render_offer_line(offer))
-    if offers[0].stamp:
-        lines.append(f"Прайсы обновлены: {offers[0].stamp}")
-    await message.answer("\n".join(lines))
+
+    if not db.price_synced(card.id):
+        if not await _refresh_cards_on_demand(user_id or message.from_user.id, [card]):
+            await message.answer("Цены у продавцов сейчас недоступны — попробуйте позже")
+            return
+    offers = db.card_offers(card.id)
+    log.info("price request cached", extra={"user_id": user_id or message.from_user.id, "query": query,
+                                            "card_id": card.id, "offers": len(offers)})
+    if not offers:
+        await message.answer(f"Предложений по «{card.name_en}» у продавцов нет")
+        return
+    synced_at = db.prices_synced_at([card.id])
+    age_hint = None if synced_at is None else humanize_remaining(max(0, int(time.time()) - synced_at))
+    await message.answer(_prices_text(card.name_en, offers, stamp=offers[0].stamp, age_hint=age_hint))
 
 
 @router.message(Command("price"))
@@ -526,25 +625,43 @@ async def cmd_price(message: Message) -> None:
     await _send_prices(message, query)
 
 
+async def _require_admin(message: Message) -> bool:
+    if is_admin(message.from_user):
+        return True
+    await message.answer("Команда только для администратора")
+    return False
+
+
 @router.message(Command("status"))
 async def cmd_status(message: Message) -> None:
+    if not await _require_admin(message):
+        return
     db = _database()
     last = db.last_poll("auctions")
     active = db.counts().lots_active
+    prices = _prices_status(db)
     if last is None:
-        await message.answer(f"Поллер ещё не запускался. Активных лотов: {active}")
+        await message.answer(f"Поллер ещё не запускался. Активных лотов: {active}\n{prices}")
         return
     age = int(time.time()) - last.started_at
     await message.answer(
         f"Лотов активно: {active}\nПоследний опрос: {humanize_remaining(age)} назад, "
-        f"{last.items} лотов, {'ok' if last.ok else 'ошибка'}"
+        f"{last.items} лотов, {'ok' if last.ok else 'ошибка'}\n{prices}"
     )
+
+
+def _prices_status(db: Database) -> str:
+    last = db.last_poll("prices")
+    if last is None:
+        return "Цены: ещё не собирались"
+    age = humanize_remaining(int(time.time()) - last.started_at)
+    return (f"Цены: {age} назад, {last.items} карт, "
+            f"{'ok' if last.ok else 'ошибка: ' + str(last.error)[:60]}")
 
 
 @router.message(Command("admin"))
 async def cmd_admin(message: Message) -> None:
-    if not is_admin(message.from_user):
-        await message.answer("Команда только для администратора")
+    if not await _require_admin(message):
         return
     db = _database()
     last = db.last_poll("auctions")
@@ -645,7 +762,6 @@ async def cmd_help(message: Message) -> None:
         "• /price <карта> — то же, что ссылка «цены», но для любой карты.\n"
         "• «⚙️ Настройки» — окна уведомлений (1д/3ч/1ч/15м).\n"
         "• /mute 1h|8h|off — пауза уведомлений (например, на ночь или в отпуске).\n"
-        "• «ℹ️ Статус» — когда поллер последний раз обновлял лоты.\n"
         "Уведомления приходят автоматически, когда лот с вашей картой подходит к концу.",
         reply_markup=main_menu(),
     )
@@ -659,7 +775,8 @@ async def btn_add(message: Message, state: FSMContext) -> None:
 
 @router.message(F.text == BUTTON_LIST)
 async def btn_list(message: Message) -> None:
-    await message.answer(_watchlist_view(message.from_user.id), parse_mode="HTML")
+    await _typing(message)
+    await message.answer(await _watchlist_view(message.from_user.id), parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("price:"))
@@ -674,11 +791,6 @@ async def cb_card_price(callback: CallbackQuery) -> None:
 async def btn_settings(message: Message) -> None:
     text, keyboard = _settings_view(message.from_user.id)
     await message.answer(text, reply_markup=keyboard)
-
-
-@router.message(F.text == BUTTON_STATUS)
-async def btn_status(message: Message) -> None:
-    await cmd_status(message)
 
 
 @router.message(F.text, ~F.text.startswith("/"), ~F.text.in_(MENU_TEXTS))

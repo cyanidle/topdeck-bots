@@ -8,7 +8,7 @@ from .windows import humanize_remaining
 NBSP = "\u00a0"
 
 QTY_PREFIX = re.compile(r"^\s*\d+\s*[xхXХ]?\s+")
-PRICE_TOKEN = re.compile(r"\d[\d\s\u00a0]*\s*(?:₽|руб(?:лей|ля|\.)?|rub\.?|р\.)", re.IGNORECASE)
+PRICE_TOKEN = re.compile(r"\d[\d\s\u00a0]*\s*(?:₽|руб(?:лей|ля|\.)?|rub\.?|р\.|p\.)", re.IGNORECASE)
 PRICE_GROUP = re.compile(r"\b\d{1,3}(?:[\s\u00a0]\d{3})+\b|\b\d{3,}\b")
 CONDITIONS = {"nm": "NM", "sp": "SP", "ex": "EX", "gd": "GD", "lp": "LP", "mp": "MP",
               "hp": "HP", "pl": "PL", "vg": "VG"}
@@ -47,15 +47,18 @@ def offer_details(offer: Offer, limit: int = 48) -> str:
         else:
             segments.append(PRICE_GROUP.sub(" ", part))
     text = "".join(segments)
+    text = re.sub(r"[#№]\s*(?=[,)])", "", text)
     text = CODE_PATTERN.sub(lambda match: CODES[match.group(1).lower()], text)
     text = GRADE_MODIFIER.sub(lambda match: CONDITIONS[match.group(1).lower()], text)
     text = re.sub(r"\s*,\s*", ", ", text)
     text = re.sub(r",\s*(?=[),])", "", text)
+    text = re.sub(r"\(\s*,\s*", "(", text)
     text = re.sub(r"\(\s*", "(", text)
     text = re.sub(r"\s*\)", ")", text)
-    details = re.sub(r"\s{2,}", " ", text).strip(" -,;:")
+    text = re.sub(r"\(\s*[,;]?\s*\)", "", text)
+    details = re.sub(r"\s+", " ", text).strip()
     details = re.sub(r"^[#№]\s*", "", details)
-    details = re.sub(r"[\s\-–—*]+$", "", details).strip(" -,;:")
+    details = re.sub(r"[\s\-–—*#№]+$", "", details).strip(" -,;:")
     return details if len(details) <= limit else details[:limit - 1].rstrip() + "…"
 
 

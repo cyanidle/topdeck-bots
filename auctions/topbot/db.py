@@ -9,7 +9,7 @@ import time
 from typing import Iterable, Sequence
 
 from .matching import MATCH_VERSION, normalize
-from .models import Card, Counts, PollRun, User, WatchlistCard, WatchlistItem
+from .models import Card, Counts, Lot, Offer, PollRun, User, WatchlistCard, WatchlistItem
 
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "schema.sql")
 
@@ -18,6 +18,17 @@ log = logging.getLogger(__name__)
 
 def title_hash(title: str) -> str:
     return hashlib.sha1(title.strip().lower().encode("utf-8")).hexdigest()
+
+
+def seller_key(offer: Offer) -> str:
+    return normalize(offer.seller_name or offer.source or "")
+
+
+def offer_from_row(row: sqlite3.Row) -> Offer:
+    return Offer(eng_name=row["name_en"], rus_name=row["name_ru"], name=row["name_en"],
+                 source=row["source"], seller_name=row["seller_name"], seller_id=None, city=None,
+                 cost=int(row["cost"]), qty=int(row["qty"]), url=row["url"], line=row["line"] or "",
+                 stamp=row["stamp"])
 
 
 class Database:
@@ -202,6 +213,28 @@ class Database:
             result.setdefault(int(row["card_id"]), []).append(int(row["user_id"]))
         return result
 
+    def lot(self, lot_id: int) -> Lot | None:
+        row = self.conn.execute("SELECT * FROM lots WHERE id=?", (lot_id,)).fetchone()
+        if row is None:
+            return None
+        return Lot(
+            id=int(row["id"]),
+            title=row["title"],
+            end_ts=int(row["end_ts"]),
+            start_ts=int(row["start_ts"]),
+            start_bid=int(row["start_bid"] or 0),
+            current_bid=int(row["current_bid"] or 0),
+            bid_count=int(row["bid_count"] or 0),
+            bin_value=int(row["bin_value"] or 0),
+            seller_id=row["seller_id"],
+            seller_name=row["seller_name"],
+            seller_city=row["seller_city"],
+            seller_refs=row["seller_refs"],
+            shipping_quick=row["shipping_quick"],
+            image_url=row["image_url"],
+            url=f"https://topdeck.ru/apps/toptrade/auctions/{row['id']}",
+        )
+
     def upsert_lot(self, lot: Lot, now: int) -> None:
         self.conn.execute(
             "INSERT INTO lots(id, title, title_hash, end_ts, start_ts, start_bid, current_bid, bid_count,"
@@ -340,3 +373,141 @@ class Database:
             items=row["items"],
             error=row["error"],
         )
+
+    def watched_lot_ids(self, now: int) -> list[int]:
+        rows = self.conn.execute(
+            "SELECT DISTINCT l.id FROM lots l"
+            " JOIN lot_cards lc ON lc.lot_id = l.id"
+            " JOIN watchlist w ON w.card_id = lc.card_id"
+            " WHERE l.state='active' AND l.end_ts > ?"
+            " ORDER BY l.end_ts",
+            (now,),
+        ).fetchall()
+        return [int(row["id"]) for row in rows]
+
+    def planned_windows(self, now: int) -> list[tuple[int, int, int]]:
+        """(fire_at, lot_id, window_s) для ещё не отправленных окон — по возрастанию fire_at."""
+        rows = self.conn.execute(
+            "SELECT u.id AS user_id, u.windows_json, l.id AS lot_id, l.end_ts FROM lots l"
+            " JOIN lot_cards lc ON lc.lot_id = l.id"
+            " JOIN watchlist w ON w.card_id = lc.card_id"
+            " JOIN users u ON u.id = w.user_id"
+            " WHERE l.state='active' AND l.end_ts > ?",
+            (now,),
+        ).fetchall()
+        sent: set[tuple[int, int, int]] = set()
+        lot_ids = sorted({int(row["lot_id"]) for row in rows})
+        if lot_ids:
+            placeholders = ",".join("?" for _ in lot_ids)
+            sent = {(int(row["user_id"]), int(row["ref_id"]), int(row["window_s"]))
+                    for row in self.conn.execute(
+                        "SELECT user_id, ref_id, window_s FROM notifications"
+                        " WHERE kind='auction_window' AND state='sent' AND window_s IS NOT NULL"
+                        f" AND ref_id IN ({placeholders})", tuple(lot_ids))}
+        plan: list[tuple[int, int, int]] = []
+        for row in rows:
+            lot_id = int(row["lot_id"])
+            end_ts = int(row["end_ts"])
+            for window in json.loads(row["windows_json"]):
+                window = int(window)
+                if (int(row["user_id"]), lot_id, window) in sent:
+                    continue
+                fire_at = end_ts - window
+                if fire_at < now - window // 2:
+                    continue
+                plan.append((fire_at, lot_id, window))
+        return sorted(plan)
+
+    def watched_cards(self) -> list[Card]:
+        rows = self.conn.execute(
+            "SELECT DISTINCT c.id, c.name_en, c.name_ru FROM cards c JOIN watchlist w ON w.card_id = c.id"
+            " ORDER BY c.name_en"
+        ).fetchall()
+        return [Card(id=int(row["id"]), name_en=row["name_en"], name_ru=row["name_ru"]) for row in rows]
+
+    def find_card(self, query: str) -> Card | None:
+        norm = normalize(query)
+        if not norm:
+            return None
+        for sql in ("SELECT id, name_en, name_ru FROM cards WHERE name_norm=?",
+                    "SELECT id, name_en, name_ru FROM cards WHERE name_norm LIKE ? ORDER BY length(name_norm)"):
+            row = self.conn.execute(sql, (norm,) if "=?" in sql else (norm + "%",)).fetchone()
+            if row is not None:
+                return Card(id=int(row["id"]), name_en=row["name_en"], name_ru=row["name_ru"])
+        return None
+
+    def save_card_offers(self, card_id: int, offers: Sequence[Offer], now: int) -> int:
+        best: dict[str, Offer] = {}
+        for offer in offers:
+            if offer.cost <= 0:
+                continue
+            key = seller_key(offer)
+            current = best.get(key)
+            if current is None or offer.cost < current.cost:
+                best[key] = offer
+        self.conn.execute("DELETE FROM card_offers WHERE card_id=?", (card_id,))
+        self.conn.executemany(
+            "INSERT OR REPLACE INTO card_offers(card_id, seller_key, source, seller_name, cost, qty, url, line,"
+            " stamp, fetched_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            [(card_id, key, offer.source, offer.seller_name, offer.cost, offer.qty, offer.url, offer.line,
+              offer.stamp, now) for key, offer in best.items()],
+        )
+        self.conn.execute(
+            "INSERT OR REPLACE INTO card_price_sync(card_id, fetched_at, offers) VALUES(?,?,?)",
+            (card_id, now, len(best)),
+        )
+        return len(best)
+
+    def card_offers(self, card_id: int) -> list[Offer]:
+        return [offer_from_row(row) for row in self.conn.execute(
+            "SELECT o.*, c.name_en, c.name_ru FROM card_offers o JOIN cards c ON c.id = o.card_id"
+            " WHERE o.card_id=? ORDER BY o.cost", (card_id,))]
+
+    def top_offers_by_card(self, card_ids: Sequence[int], limit: int) -> dict[int, list[Offer]]:
+        if not card_ids:
+            return {}
+        placeholders = ",".join("?" for _ in card_ids)
+        rows = self.conn.execute(
+            f"SELECT card_id, seller_name, source, cost, qty, url, line, stamp, name_en, name_ru FROM ("
+            f"  SELECT o.*, c.name_en, c.name_ru,"
+            f"         ROW_NUMBER() OVER (PARTITION BY o.card_id ORDER BY o.cost) AS rn"
+            f"  FROM card_offers o JOIN cards c ON c.id = o.card_id"
+            f"  WHERE o.card_id IN ({placeholders})"
+            f") WHERE rn <= ? ORDER BY card_id, cost",
+            (*card_ids, limit),
+        ).fetchall()
+        result: dict[int, list[Offer]] = {}
+        for row in rows:
+            result.setdefault(int(row["card_id"]), []).append(offer_from_row(row))
+        return result
+
+    def cards_without_prices(self, card_ids: Sequence[int]) -> list[int]:
+        if not card_ids:
+            return []
+        placeholders = ",".join("?" for _ in card_ids)
+        synced = {int(row["card_id"]) for row in self.conn.execute(
+            f"SELECT card_id FROM card_price_sync WHERE card_id IN ({placeholders})", tuple(card_ids))}
+        return [card_id for card_id in card_ids if card_id not in synced]
+
+    def price_synced(self, card_id: int) -> bool:
+        row = self.conn.execute("SELECT 1 FROM card_price_sync WHERE card_id=?", (card_id,)).fetchone()
+        return row is not None
+
+    def prices_synced_at(self, card_ids: Sequence[int]) -> int | None:
+        if not card_ids:
+            return None
+        placeholders = ",".join("?" for _ in card_ids)
+        row = self.conn.execute(
+            f"SELECT MIN(fetched_at) AS ts FROM card_price_sync WHERE card_id IN ({placeholders})",
+            tuple(card_ids),
+        ).fetchone()
+        return None if row is None or row["ts"] is None else int(row["ts"])
+
+    def prune_card_offers(self, card_ids: Sequence[int]) -> None:
+        if not card_ids:
+            self.conn.execute("DELETE FROM card_offers")
+            self.conn.execute("DELETE FROM card_price_sync")
+            return
+        placeholders = ",".join("?" for _ in card_ids)
+        self.conn.execute(f"DELETE FROM card_offers WHERE card_id NOT IN ({placeholders})", tuple(card_ids))
+        self.conn.execute(f"DELETE FROM card_price_sync WHERE card_id NOT IN ({placeholders})", tuple(card_ids))

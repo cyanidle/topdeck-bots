@@ -48,6 +48,24 @@ class OfferDetailsTest(unittest.TestCase):
     def test_empty_line_gives_empty_details(self):
         self.assertEqual(offer_details(offer("1 Snapcaster Mage")), "")
 
+    def test_empty_parentheses_are_removed(self):
+        self.assertEqual(offer_details(offer("1 Snapcaster Mage 1500 ()")), "")
+        self.assertEqual(offer_details(offer("1x Snapcaster Mage (1500)")), "")
+        self.assertEqual(offer_details(offer("1 Snapcaster Mage 1 500 ₽ ( ) #")), "")
+        self.assertEqual(offer_details(offer("1 Snapcaster Mage ( 1500 , )")), "")
+
+    def test_only_trailing_price_leaves_no_stray_punctuation(self):
+        self.assertEqual(offer_details(offer("1 Snapcaster Mage 1 500 ₽ -")), "")
+        self.assertEqual(offer_details(offer("Snapcaster Mage –")), "")
+
+    def test_hash_left_after_dropped_number_is_cleaned(self):
+        line = "1\u00a0Snapcaster Mage (#0158, LTR, EN, M/NM)\u00a0- 2950"
+        self.assertEqual(offer_details(offer(line)), "(LTR, EN, M/NM)")
+
+    def test_latin_p_price_mark_is_dropped(self):
+        self.assertEqual(offer_details(offer("3\u00a0Snapcaster Mage (Ice Age, sp+) - 950p.")),
+                         "(Ice Age, SP+)")
+
     def test_long_details_are_truncated(self):
         details = offer_details(offer("1 Snapcaster Mage " + "x" * 90))
         self.assertLessEqual(len(details), 48)

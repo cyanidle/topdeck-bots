@@ -15,6 +15,17 @@ Telegram-бот, который по персональному watchlist'у п�
 | [`docs/spec-infra.md`](docs/spec-infra.md) | Xray-core, подписка vless+reality+xhttp, прокси **внутри процесса** для Telegram (только telegram-трафик, остальное — direct), секреты, запуск |
 | [`docs/plan.md`](docs/plan.md) | Этапы 0–2 (сделаны), открытые вопросы и риски |
 
+## Быстрый старт бота
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -e .   # один раз
+cp .env.example .env                                  # BOT_TOKEN, прокси, админы; chmod 600
+./topbot.sh                                           # запуск на переднем плане
+./topbot.sh vpn refresh                               # если туннель до Telegram отвалился
+```
+
+`./topbot.sh` — тонкая обёртка перед `python -m topbot`: проверяет `.venv` и `.env` (или `BOT_TOKEN` в окружении), переходит в корень репозитория и делает `exec`. Никакой демонизации, pid-файлов и своего лога: процесс живёт как чайлд супервизора (`ExecStart=/opt/topbot/topbot.sh` в systemd), логи идут в stdout/stderr → journal, SIGTERM доходит до бота.
+
 ## Быстрый старт VPN-ядра (Telegram egress)
 
 ```bash
@@ -42,8 +53,9 @@ python3 tools/topdeck_probe.py auctions --hours 24 --limit 10               # а
 docs/       спецификации (исследование API, продукт, поллер, БД, инфраструктура, план)
 deploy/     VPN-ядро: xray_from_sub.py (конфиг из подписки), vpn.sh
 tools/      topdeck_probe.py — референсный клиент публичных эндпоинтов TOPDeck
-topbot/     бот и поллер: models.py (dataclass-DTO), clients/, db.py, poller.py, bot.py, webui.py
-tests/      unittest'ы (парсинг, матчинг, окна, поллер, бот-флоу, клиенты, логи)
+topbot/     бот и поллеры: models.py (dataclass-DTO), clients/, db.py, poller.py, prices.py, bot.py, webui.py
+tests/      unittest'ы (парсинг, матчинг, окна, поллеры, кэш цен, бот-флоу, клиенты, логи)
+topbot.sh   запуск бота (exec python -m topbot, для супервизора) + прокси в deploy/vpn.sh
 .env        токен бота + подписка (chmod 600, в git не попадает; шаблон — .env.example)
 ```
 
@@ -54,7 +66,9 @@ Python 3.12+ · aiogram 3.x · SQLite (WAL) · Xray-core (egress в Telegram, в
 ## Статус
 
 * Этап 0 (исследование) — выполнен: `docs/research-topdeck-api.md`, `tools/topdeck_probe.py` проверен на живом сайте.
-* Этап 1 (бот + watchlist) — выполнен: `/start /menu /add /list /remove /price /status /settings /mute /help /admin`, локальный каталог Scryfall-имён с автокомплитом и дизамбигуацией.
+* Этап 1 (бот + watchlist) — выполнен: `/start /menu /add /list /remove /price /settings /mute /help /admin` (плюс админский `/status`), локальный каталог Scryfall-имён с автокомплитом и дизамбигуацией.
 * Этап 2 (поллер аукционов + уведомления) — выполнен: окна 1д/3ч/1ч/15м, дедуп, тихие часы, `/mute`, матчинг лотов по названию (точное/префикс/нечёткое) и по составу, алерты админу о серии сбоев.
-* Тесты: 193 unittest (`.venv/bin/python -m unittest discover -s tests -t .`).
-* Вне скоупа (решение 2026-11-16): суточный `OfferPoller` со снимками цен и `price_drop`, история завершённых лотов, полноценный веб-UI, деплой на сервер. Цены доступны по запросу — `/price` и ссылка «цены» в `/list`.
+* Точные окна — выполнен: `WindowScheduler` просыпается ровно в момент `end_ts - окно` (минута в минуту), поллер (14 мин) только собирает лоты и матчи.
+* Кэш цен — выполнен: `PricePoller` раз в 15 минут обновляет `card_offers` по объединению карт из всех watchlist'ов, `/list` и `/price` читают кэш (ответ за миллисекунды вместо 6–7 секунд).
+* Тесты: 250 unittest (`.venv/bin/python -m unittest discover -s tests -t .`).
+* Вне скоупа (решение 2026-11-16): суточный `OfferPoller` со снимками цен и `price_drop`, история завершённых лотов, полноценный веб-UI, деплой на сервер. Цены доступны из кэша — `/price` и ссылка «цены» в `/list`.

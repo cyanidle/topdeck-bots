@@ -11,7 +11,7 @@
 
 * Юнит-тесты — только `unittest` через venv, без pytest-фикстур: `.venv/bin/python -m unittest discover -s tests -t .`
 * Живые проверки внешних API — через `run_command` и heredoc с `.venv/bin/python` (не через `run_python`: он запускает системный python3 без aiogram).
-* Бот локально: `.venv/bin/python -m topbot` (aiogram polling + поллер раз в 840 с + web-UI на `127.0.0.1:8080`); лог — `data/logs/bot.jsonl`.
+* Бот локально: `./topbot.sh` — тонкая обёртка (`exec .venv/bin/python -m topbot`, проверка `.venv`/`.env`, `cd` в корень), рассчитан на супервизор: без pid-файлов и демонизации, логи в stdout/stderr. Внутри — aiogram polling + поллеры аукционов/цен + планировщик окон + web-UI на `127.0.0.1:8080`; файл-лог приложения (JSON Lines) — `data/logs/bot.jsonl`.
 
 ## Код
 

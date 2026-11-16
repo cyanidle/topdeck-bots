@@ -7,10 +7,7 @@ from aiohttp import ClientError
 
 from . import matching
 from .db import Database
-from .messages import render_auction_message
 from .models import PollStats
-from .notifier import Notifier
-from .windows import due_window
 
 log = logging.getLogger(__name__)
 
@@ -21,10 +18,9 @@ ADMIN_ALERT_COOLDOWN_S = 3600
 
 
 class AuctionPoller:
-    def __init__(self, db: Database, client, notifier: Notifier, clock=time.time):
+    def __init__(self, db: Database, client, clock=time.time):
         self.db = db
         self.client = client
-        self.notifier = notifier
         self.clock = clock
 
     async def poll_once(self) -> PollStats:
@@ -54,45 +50,22 @@ class AuctionPoller:
         ensure_matches(self.db)
         stats.compositions = await self._refresh_compositions(now)
         ensure_matches(self.db)
-        cards = {card.id: card for card in self.db.cards_index()}
         for lot in lots:
             card_ids = self.db.lot_card_ids(lot.id)
             if card_ids:
                 stats.matched_lots += 1
-
             watched = [card_id for card_id in card_ids if card_id in subscribers]
             if not watched:
                 continue
             stats.watched_lots += 1
-            methods = self.db.lot_card_methods(lot.id)
             log.info("lot matches watchlist", extra={"lot_id": lot.id, "cards": len(card_ids),
                                                      "watched": len(watched),
                                                      "ends_in_min": (lot.end_ts - now) // 60})
-            remaining = lot.end_ts - now
-            for card_id in watched:
-                card = cards.get(card_id)
-                from_composition = methods.get(card_id, "").startswith("composition:")
-                card_name = card.name_en if card and from_composition else None
-                for user_id in subscribers[card_id]:
-                    user = self.db.get_user(user_id)
-                    window = due_window(remaining, user.windows,
-                                        self.db.sent_windows(user_id, "auction_window", lot.id))
-                    if window is None:
-                        continue
-                    text = render_auction_message(lot, remaining, card_name=card_name)
-                    delivered = await self.notifier.notify(user, "auction_window", lot.id, window, text,
-                                                           {"lot": lot.id, "card_id": card_id})
-                    log.info("auction notification", extra={"user_id": user_id, "lot_id": lot.id,
-                                                            "window_s": window, "remaining_s": remaining,
-                                                            "delivered": delivered})
-                    if delivered:
-                        stats.notifications += 1
 
         duration_ms = int((time.perf_counter() - started_perf) * 1000)
         self.db.record_poll("auctions", started_at, duration_ms, True, len(lots))
         log.info("auction poll done", extra={"lots": stats.lots, "matched_lots": stats.matched_lots,
                                              "watched_lots": stats.watched_lots,
-                                             "notifications": stats.notifications,
                                              "vanished": stats.vanished,
                                              "compositions": stats.compositions, "ms": duration_ms})
         return stats

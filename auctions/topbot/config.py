@@ -41,6 +41,7 @@ class Settings:
     db_path: str = "./data/topbot.sqlite3"
     user_agent: str = "topbot/0.1 (+contact)"
     poll_interval_s: int = 840
+    prices_interval_s: int = 900
     windows: tuple[int, ...] = DEFAULT_WINDOWS
     quiet_from: int = 23 * 60
     quiet_to: int = 9 * 60
@@ -67,7 +68,7 @@ class Settings:
             )
         if raw.get("SCRYFALL_ENABLED"):
             settings.scryfall_enabled = raw["SCRYFALL_ENABLED"] not in ("0", "false", "no")
-        for name in ("web_port", "poll_interval_s", "quiet_from", "quiet_to"):
+        for name in ("web_port", "poll_interval_s", "prices_interval_s", "quiet_from", "quiet_to"):
             key = name.upper()
             if raw.get(key):
                 setattr(settings, name, int(raw[key]))

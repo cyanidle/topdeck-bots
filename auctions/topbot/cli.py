@@ -17,6 +17,7 @@ from .messages import render_auction_message, render_offer_line
 from .models import Offer
 from .notifier import Notifier
 from .poller import AuctionPoller
+from .scheduler import WindowScheduler
 
 
 async def _client(settings: Settings) -> tuple[aiohttp.ClientSession, TopdeckClient]:
@@ -86,8 +87,9 @@ async def cmd_poll(settings: Settings) -> int:
         print(f"[notify -> {user_id}]\n{text}\n")
 
     try:
-        poller = AuctionPoller(db, client, Notifier(db, sender))
+        poller = AuctionPoller(db, client)
         stats = await poller.poll_once()
+        await WindowScheduler(db, Notifier(db, sender)).dispatch()
     finally:
         await session.close()
         db.close()

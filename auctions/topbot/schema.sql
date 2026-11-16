@@ -119,3 +119,25 @@ CREATE TABLE IF NOT EXISTS poll_runs (
     items       INTEGER,
     error       TEXT
 );
+
+CREATE TABLE IF NOT EXISTS card_offers (
+    card_id     INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+    seller_key  TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    seller_name TEXT,
+    cost        INTEGER NOT NULL,
+    qty         INTEGER NOT NULL DEFAULT 1,
+    url         TEXT,
+    line        TEXT NOT NULL DEFAULT '',
+    stamp       TEXT,
+    fetched_at  INTEGER NOT NULL,
+    PRIMARY KEY (card_id, seller_key)
+);
+
+CREATE INDEX IF NOT EXISTS card_offers_cost_idx ON card_offers(card_id, cost);
+
+CREATE TABLE IF NOT EXISTS card_price_sync (
+    card_id    INTEGER PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE,
+    fetched_at INTEGER NOT NULL,
+    offers     INTEGER NOT NULL
+);

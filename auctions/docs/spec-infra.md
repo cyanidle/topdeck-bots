@@ -138,10 +138,13 @@ curl -s https://topdeck.ru/apps/toptrade/auctions -o /dev/null -w '%{http_code}\
 ./deploy/vpn.sh up          # конфиг из подписки + SOCKS на 127.0.0.1:1080, проверка api.telegram.org
 python3 -m venv .venv && .venv/bin/pip install -e .
 cp .env.example .env        # BOT_TOKEN, TD_PROXY_SUB_URL, ADMIN_TG_IDS, chmod 600
-.venv/bin/python -m topbot  # aiogram polling + поллер + /healthz на 127.0.0.1:8080
+./topbot.sh                 # запуск на переднем плане (для systemd: ExecStart=…/topbot.sh)
+./topbot.sh vpn refresh     # перегенерировать туннель (обёртка над deploy/vpn.sh)
 ```
 
-Проверки: `./deploy/vpn.sh status` → `api.telegram.org via 127.0.0.1:1080 -> 200/404`; бот — `/status` в Telegram, `/healthz` и `/admin` в чате. Обновление узла: `./deploy/vpn.sh refresh` (подписка могла сменить `sni`/ключи).
+`./topbot.sh` — только запуск: проверяет `.venv` и `.env` (или `BOT_TOKEN` в окружении), `cd` в корень репозитория (нужен для `./data` и `.env`) и `exec python -m topbot`. Демонизации, pid-файлов и своего лога нет: процесс — чайлд супервизора, логи идут в stdout/stderr (в systemd — в journal), SIGTERM обрабатывается ботом.
+
+Проверки: `./deploy/vpn.sh status` → `api.telegram.org via 127.0.0.1:1080 -> 200/404`; бот — `/status` (только админ), `/healthz` и `/admin`. Обновление узла: `./deploy/vpn.sh refresh` (подписка могла сменить `sni`/ключи).
 
 ## 7. Секреты и конфигурация
 
@@ -168,4 +171,4 @@ POLL_INTERVAL_S=840
 
 1. `git clone` → `/opt/topbot`, положить бинарник Xray (`./vendor/xray`), затем `./deploy/vpn.sh up`.
 2. `python3 -m venv .venv && .venv/bin/pip install -e .`, заполнить `.env` (см. §7).
-3. Запуск — `.venv/bin/python -m topbot` (см. §6); автозапуск на хосте — любым удобным супервизором, репозиторий юнитов не поставляет.
+3. Запуск — `./topbot.sh` (см. §6) как `ExecStart` юнита (`Environment=BOT_TOKEN=…` или `.env`), репозиторий юнитов не поставляет.

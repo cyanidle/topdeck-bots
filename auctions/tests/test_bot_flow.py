@@ -51,13 +51,21 @@ class FakeScryfall:
 
 
 class FakeTopdeck:
-    def __init__(self, offers: list[Offer]):
+    def __init__(self, offers: list[Offer], error: Exception | None = None,
+                 truncate_over: int | None = None):
         self.offers = offers
+        self.error = error
+        self.truncate_over = truncate_over
         self.calls = 0
+        self.batches: list[list[str]] = []
 
     async def search_singles(self, names):
         self.calls += 1
-        return self.offers, False
+        self.batches.append(list(names))
+        if self.error is not None:
+            raise self.error
+        truncated = self.truncate_over is not None and len(names) > self.truncate_over
+        return self.offers, truncated
 
 
 def make_offer(eng_name: str, rus_name: str | None = None, **overrides) -> Offer:
@@ -152,7 +160,7 @@ class CandidatesTest(unittest.IsolatedAsyncioTestCase):
 
 
 @unittest.skipUnless(HAS_AIOGRAM, "aiogram is not installed")
-class WatchlistViewTest(unittest.TestCase):
+class WatchlistViewTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         from topbot import bot as bot_module
 
@@ -161,20 +169,30 @@ class WatchlistViewTest(unittest.TestCase):
         self.db.ensure_user(42, "tester")
         self.card = self.db.upsert_card("Tarmogoyf", "tarmogoyf", name_ru="Тармогойф")
         self.db.add_to_watchlist(42, self.card)
+        self.topdeck = FakeTopdeck([])
         bot_module.ctx.db = self.db
+        bot_module.ctx.topdeck = self.topdeck
         bot_module.ctx.bot_username = "topdeck_test_bot"
 
     def tearDown(self) -> None:
         self.db.close()
         self.bot.ctx.bot_username = ""
+        self.bot.ctx.topdeck = None
 
-    def test_view_uses_the_requested_user_not_the_sender(self):
-        text = self.bot._watchlist_view(42)
+    async def test_view_uses_the_requested_user_not_the_sender(self):
+        text = await self.bot._watchlist_view(42)
         self.assertIn("Tarmogoyf", text)
+        self.assertIn("📋 <b>Watchlist</b>", text)
         self.assertNotIn("•", text)
 
-    def test_actions_are_text_links(self):
-        text = self.bot._watchlist_view(42)
+    async def test_card_is_bold_title_with_actions_on_their_own_line(self):
+        block = (await self.bot._watchlist_view(42)).split("\n\n")[1].splitlines()
+        self.assertEqual(block[0], "<b>Tarmogoyf</b>")
+        self.assertEqual(block[1], "лотов нет")
+        self.assertTrue(block[2].startswith("› "), block[2])
+
+    async def test_actions_are_text_links(self):
+        text = await self.bot._watchlist_view(42)
         self.assertIn('href="https://t.me/topdeck_test_bot?start=price_', text)
         self.assertIn('href="https://t.me/topdeck_test_bot?start=rm_', text)
         self.assertIn(f"?start=price_{self.card}", text)
@@ -182,27 +200,209 @@ class WatchlistViewTest(unittest.TestCase):
         self.assertIn(">цены</a>", text)
         self.assertIn(">удалить</a>", text)
 
-    def test_card_name_links_to_the_nearest_lot(self):
+    async def test_card_name_links_to_the_nearest_lot(self):
         self.db.upsert_lot(Lot(id=7, title="Bayou test", end_ts=int(time.time()) + 3600,
                                start_ts=int(time.time()) - 3600, start_bid=500, current_bid=500, bid_count=1,
                                bin_value=0, seller_id=1, seller_name="seller", seller_city="Москва",
                                seller_refs=1, shipping_quick="Москва, почта", image_url=None,
                                url="https://topdeck.ru/lot/7"), int(time.time()))
         self.db.save_lot_cards(7, [(self.card, 1.0, "exact_en")], title_hash("Bayou test"))
-        text = self.bot._watchlist_view(42)
-        self.assertIn('<a href="https://topdeck.ru/apps/toptrade/auctions/7">Tarmogoyf</a>', text)
+        text = await self.bot._watchlist_view(42)
+        self.assertIn('<b><a href="https://topdeck.ru/apps/toptrade/auctions/7">Tarmogoyf</a></b>', text)
 
-    def test_card_names_are_html_escaped(self):
+    async def test_card_names_are_html_escaped(self):
         risky = self.db.upsert_card("R&D's Secret Lair", "r d s secret lair")
         self.db.add_to_watchlist(42, risky)
-        text = self.bot._watchlist_view(42)
+        text = await self.bot._watchlist_view(42)
         self.assertIn("R&amp;D's Secret Lair", text)
         self.assertNotIn("&amp;amp;", text)
 
-    def test_view_for_unknown_user_is_empty(self):
-        text = self.bot._watchlist_view(777)
+    async def test_view_for_unknown_user_is_empty(self):
+        text = await self.bot._watchlist_view(777)
         self.assertIn("Watchlist пуст", text)
         self.assertNotIn("t.me", text)
+        self.assertEqual(self.topdeck.calls, 0)
+
+
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram is not installed")
+class WatchlistInlinePricesTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        from topbot import bot as bot_module
+
+        self.bot = bot_module
+        self.db = Database(":memory:")
+        self.db.ensure_user(42, "tester")
+        self.goyf = self.db.upsert_card("Tarmogoyf", "tarmogoyf", name_ru="Тармогойф")
+        self.bolt = self.db.upsert_card("Lightning Bolt", "lightning bolt")
+        self.db.add_to_watchlist(42, self.goyf)
+        self.db.add_to_watchlist(42, self.bolt)
+        self.topdeck = FakeTopdeck([])
+        bot_module.ctx.db = self.db
+        bot_module.ctx.topdeck = self.topdeck
+        bot_module.ctx.bot_username = "topdeck_test_bot"
+
+    def tearDown(self) -> None:
+        self.bot.ctx.db = None
+        self.bot.ctx.topdeck = None
+        self.bot.ctx.bot_username = ""
+        self.db.close()
+
+    def _use(self, offers: list[Offer], error: Exception | None = None,
+             truncate_over: int | None = None) -> FakeTopdeck:
+        self.topdeck = FakeTopdeck(offers, error=error, truncate_over=truncate_over)
+        self.bot.ctx.topdeck = self.topdeck
+        return self.topdeck
+
+    async def test_cached_prices_are_rendered_without_network(self):
+        synced_at = int(time.time()) - 120
+        self.db.save_card_offers(self.goyf, [make_offer("Tarmogoyf", seller_name="Alphonse", cost=700),
+                                            make_offer("Tarmogoyf", seller_name="Bernard", cost=800)], synced_at)
+        self.db.save_card_offers(self.bolt, [], synced_at)
+        self._use([])
+        text = await self.bot._watchlist_view(42)
+        self.assertIn("Цены у продавцов: 700 ₽ Alphonse · 800 ₽ Bernard", text)
+        self.assertEqual(self.topdeck.calls, 0)
+        self.assertIn("💰 Прайсы из кэша: 2 мин назад", text)
+
+    async def test_only_cards_missing_from_the_cache_are_requested(self):
+        self.db.save_card_offers(self.goyf, [make_offer("Tarmogoyf", seller_name="Alphonse", cost=700)], 0)
+        self._use([make_offer("Lightning Bolt", seller_name="Bernard", cost=50)])
+        text = await self.bot._watchlist_view(42)
+        self.assertEqual(self.topdeck.batches, [["Lightning Bolt"]])
+        self.assertIn("700 ₽ Alphonse", text)
+        self.assertIn("50 ₽ Bernard", text)
+
+    async def test_at_most_three_cheapest_per_card_in_price_order(self):
+        self._use([make_offer("Tarmogoyf", "Тармогойф", seller_name="Alphonse", cost=900),
+                   make_offer("Tarmogoyf", "Тармогойф", seller_name="Bernard", cost=700),
+                   make_offer("Tarmogoyf", "Тармогойф", seller_name="Cornelius", cost=800),
+                   make_offer("Tarmogoyf", "Тармогойф", seller_name="Desmond", cost=1200)])
+        text = await self.bot._watchlist_view(42)
+        self.assertIn("700 ₽ Bernard", text)
+        self.assertIn("Цены у продавцов: 700 ₽ Bernard", text)
+        self.assertIn("800 ₽ Cornelius", text)
+        self.assertIn("900 ₽ Alphonse", text)
+        self.assertNotIn("Desmond", text)
+        self.assertLess(text.index("Bernard"), text.index("Cornelius"))
+        self.assertLess(text.index("Cornelius"), text.index("Alphonse"))
+
+    async def test_offer_is_matched_by_russian_name(self):
+        self._use([make_offer("Some English Print", "Тармогойф", seller_name="Rus", cost=650)])
+        text = await self.bot._watchlist_view(42)
+        self.assertIn("650 ₽ Rus", text)
+
+    async def test_prices_sit_on_their_own_line_between_lots_and_actions(self):
+        self._use([make_offer("Tarmogoyf", seller_name="Alphonse", cost=700)])
+        block = next(part for part in (await self.bot._watchlist_view(42)).split("\n\n")
+                     if "Tarmogoyf" in part).splitlines()
+        self.assertEqual(block[0], "<b>Tarmogoyf</b>")
+        self.assertEqual(block[1], "лотов нет")
+        self.assertEqual(block[2], "💰 Цены у продавцов: 700 ₽ Alphonse")
+        self.assertTrue(block[3].startswith("› "), block[3])
+
+    async def test_cheapest_offer_per_seller_is_kept_once(self):
+        self._use([make_offer("Tarmogoyf", seller_name="Alphonse", cost=900),
+                   make_offer("Tarmogoyf", seller_name="Alphonse", cost=700)])
+        text = await self.bot._watchlist_view(42)
+        self.assertEqual(text.count("Alphonse"), 1)
+        self.assertIn("700 ₽ Alphonse", text)
+        self.assertNotIn("900", text)
+
+    async def test_card_without_offers_has_no_price_line(self):
+        self._use([make_offer("Tarmogoyf", seller_name="Alphonse", cost=700)])
+        text = await self.bot._watchlist_view(42)
+        self.assertEqual(text.count("₽"), 1)
+
+    async def test_zero_and_foreign_offers_are_ignored(self):
+        self._use([make_offer("Tarmogoyf", seller_name="Free", cost=0),
+                   make_offer("Bayou", seller_name="Other", cost=100)])
+        text = await self.bot._watchlist_view(42)
+        self.assertNotIn("₽", text)
+        self.assertNotIn("Other", text)
+
+    async def test_long_seller_name_is_truncated(self):
+        self._use([make_offer("Tarmogoyf", seller_name="ОченьДлинноеИмяПродавца", cost=700)])
+        text = await self.bot._watchlist_view(42)
+        label = [line for line in text.splitlines() if "700" in line][0].split("700 ₽")[1].strip()
+        self.assertTrue(label.endswith("…"), label)
+        self.assertLessEqual(len(label), 18)
+
+    async def test_cards_are_requested_in_batches(self):
+        for index in range(7):
+            card_id = self.db.upsert_card(f"Filler {index}", f"filler {index}")
+            self.db.add_to_watchlist(42, card_id)
+        await self.bot._watchlist_view(42)
+        self.assertEqual(len(self.topdeck.batches), 2)
+        self.assertEqual([len(batch) for batch in self.topdeck.batches], [8, 1])
+
+    async def test_network_failure_keeps_the_list_and_warns(self):
+        self._use([], error=OSError("tunnel is down"))
+        with self.assertLogs("topbot.bot", level="WARNING") as logs:
+            text = await self.bot._watchlist_view(42)
+        self.assertIn("⚠️ цены у продавцов сейчас недоступны", text)
+        self.assertIn("Tarmogoyf", text)
+        self.assertTrue(any("card prices fetch failed" in line for line in logs.output))
+
+    async def test_truncated_batch_is_split_in_halves(self):
+        for index in range(6):
+            card_id = self.db.upsert_card(f"Filler {index}", f"filler {index}")
+            self.db.add_to_watchlist(42, card_id)
+        self._use([make_offer("Tarmogoyf", seller_name="Alphonse", cost=700)], truncate_over=4)
+        with self.assertLogs("topbot.prices", level="WARNING") as logs:
+            text = await self.bot._watchlist_view(42)
+        self.assertEqual([len(batch) for batch in self.topdeck.batches], [8, 4, 4])
+        self.assertIn("700 ₽ Alphonse", text)
+        self.assertTrue(any("splitting batch" in line for line in logs.output))
+
+    async def test_truncated_single_card_is_not_split(self):
+        self.db.remove_from_watchlist(42, self.bolt)
+        self._use([make_offer("Tarmogoyf", seller_name="Alphonse", cost=700)], truncate_over=0)
+        with self.assertLogs("topbot.prices", level="WARNING"):
+            text = await self.bot._watchlist_view(42)
+        self.assertEqual(self.topdeck.calls, 1)
+        self.assertIn("700 ₽ Alphonse", text)
+
+    async def test_cmd_list_sends_typing_before_prices(self):
+        actions: list[tuple[int, str]] = []
+        sent: list[str] = []
+
+        class FakeBot:
+            async def send_chat_action(self, chat_id, action):
+                actions.append((chat_id, action))
+
+        class FakeMessage:
+            from_user = type("U", (), {"id": 42, "username": "tester"})()
+            chat = type("C", (), {"id": 5})()
+            bot = FakeBot()
+
+            async def answer(self, text, **kwargs):
+                sent.append(text)
+
+        self._use([make_offer("Tarmogoyf", seller_name="Alphonse", cost=700)])
+        await self.bot.cmd_list(FakeMessage())
+        self.assertEqual(actions, [(5, "typing")])
+        self.assertIn("700 ₽ Alphonse", sent[0])
+
+    async def test_typing_failure_does_not_break_the_list(self):
+        from aiogram.exceptions import TelegramBadRequest
+
+        class FakeBot:
+            async def send_chat_action(self, chat_id, action):
+                raise TelegramBadRequest(method=None, message="chat not found")
+
+        class FakeMessage:
+            from_user = type("U", (), {"id": 42, "username": "tester"})()
+            chat = type("C", (), {"id": 5})()
+            bot = FakeBot()
+
+            async def answer(self, text, **kwargs):
+                self.sent = text
+
+        message = FakeMessage()
+        with self.assertLogs("topbot.bot", level="INFO") as logs:
+            await self.bot.cmd_list(message)
+        self.assertIn("Tarmogoyf", message.sent)
+        self.assertTrue(any("chat action failed" in line for line in logs.output))
 
 
 @unittest.skipUnless(HAS_AIOGRAM, "aiogram is not installed")
@@ -502,10 +702,10 @@ class CardPriceButtonTest(unittest.IsolatedAsyncioTestCase):
         self.bot.ctx.db = None
         self.db.close()
 
-    def test_list_has_price_link_for_every_card(self):
+    async def test_list_has_price_link_for_every_card(self):
         self.bot.ctx.bot_username = "topdeck_test_bot"
         try:
-            text = self.bot._watchlist_view(42)
+            text = await self.bot._watchlist_view(42)
         finally:
             self.bot.ctx.bot_username = ""
         self.assertIn("Tarmogoyf", text)
@@ -539,6 +739,41 @@ class CardPriceButtonTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("300 ₽", sent[0])
         self.assertIn("Umezawa", sent[0])
         self.assertEqual(answers, ["Смотрю цены у продавцов…"])
+        self.assertNotIn("Сравните с текущей ставкой", sent[0])
+
+    async def test_price_command_is_served_from_cache(self):
+        self.db.save_card_offers(self.card, [make_offer("Tarmogoyf", "Тармогойф", seller_name="Umezawa",
+                                                        cost=300)], 0)
+        sent: list[str] = []
+
+        class FakeMessage:
+            from_user = type("U", (), {"id": 42, "username": "tester"})()
+            text = "/price tarmogoyf"
+
+            async def answer(self, text, **kwargs):
+                sent.append(text)
+
+        await self.bot.cmd_price(FakeMessage())
+
+        self.assertEqual(self.bot.ctx.topdeck.calls, 0)
+        self.assertIn("300 ₽", sent[0])
+        self.assertIn("Забрано из кэша", sent[0])
+
+    async def test_price_command_for_card_without_offers_does_not_hit_the_network(self):
+        self.db.save_card_offers(self.card, [], 0)
+        sent: list[str] = []
+
+        class FakeMessage:
+            from_user = type("U", (), {"id": 42, "username": "tester"})()
+            text = "/price tarmogoyf"
+
+            async def answer(self, text, **kwargs):
+                sent.append(text)
+
+        await self.bot.cmd_price(FakeMessage())
+
+        self.assertEqual(self.bot.ctx.topdeck.calls, 0)
+        self.assertIn("у продавцов нет", sent[0])
 
     async def test_unknown_card_is_reported(self):
         answers: list[str | None] = []
@@ -569,6 +804,7 @@ class CardPriceButtonTest(unittest.IsolatedAsyncioTestCase):
         labels = [button.text for row in bot_module.main_menu().keyboard for button in row]
         self.assertEqual(labels, list(bot_module.MENU_TEXTS))
         self.assertNotIn("💰 Цена", labels)
+        self.assertNotIn("ℹ️ Статус", labels)
 
 
 @unittest.skipUnless(HAS_AIOGRAM, "aiogram is not installed")
@@ -587,6 +823,7 @@ class StartDeepLinkTest(unittest.IsolatedAsyncioTestCase):
         bot_module.ctx.catalog = CardCatalog(self.db)
         bot_module.ctx.scryfall = None
         self.sent: list[str] = []
+        self.deleted: list[int] = []
 
     def tearDown(self) -> None:
         self.bot.ctx.db = None
@@ -594,14 +831,21 @@ class StartDeepLinkTest(unittest.IsolatedAsyncioTestCase):
         self.bot.ctx.catalog = None
         self.db.close()
 
-    def _message(self, text: str):
+    def _message(self, text: str, delete_error: Exception | None = None):
         sent = self.sent
+        deleted = self.deleted
 
         class FakeMessage:
             from_user = type("U", (), {"id": 42, "username": "tester", "first_name": "Tester"})()
+            message_id = 11
 
             async def answer(self, answer_text, **kwargs):
                 sent.append(answer_text)
+
+            async def delete(self):
+                if delete_error is not None:
+                    raise delete_error
+                deleted.append(self.message_id)
 
         message = FakeMessage()
         message.text = text
@@ -612,20 +856,33 @@ class StartDeepLinkTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.topdeck.calls, 1)
         self.assertTrue(any("Минимальные предложения" in text for text in self.sent))
         self.assertFalse(any("Этот бот хранит" in text for text in self.sent))
+        self.assertEqual(self.deleted, [11])
 
     async def test_remove_deep_link_deletes_card(self):
         await self.bot.cmd_start(self._message(f"/start rm_{self.card}"))
         self.assertEqual(self.db.watchlist(42), [])
         self.assertIn("Карта удалена", self.sent[0])
+        self.assertEqual(self.deleted, [11])
 
     async def test_remove_of_missing_card_is_explained(self):
         await self.bot.cmd_start(self._message("/start rm_999"))
         self.assertIn("Карты уже нет в списке", self.sent[0])
 
+    async def test_undeletable_start_message_is_logged(self):
+        from aiogram.exceptions import TelegramBadRequest
+
+        message = self._message(f"/start price_{self.card}",
+                                delete_error=TelegramBadRequest(method=None, message="message can't be deleted"))
+        with self.assertLogs("topbot.bot", level="INFO") as logs:
+            await self.bot.cmd_start(message)
+        self.assertTrue(any("start message is not deletable" in line for line in logs.output))
+        self.assertTrue(any("Минимальные предложения" in text for text in self.sent))
+
     async def test_unknown_payload_shows_welcome(self):
         await self.bot.cmd_start(self._message("/start something"))
         self.assertTrue(any("Этот бот хранит" in text for text in self.sent))
         self.assertEqual(len(self.db.watchlist(42)), 1)
+        self.assertEqual(self.deleted, [])
 
 
 @unittest.skipUnless(HAS_AIOGRAM, "aiogram is not installed")
@@ -692,6 +949,50 @@ class FreeTextTest(unittest.IsolatedAsyncioTestCase):
         await self.bot.on_free_text(self._message("zzzz qqqq", sent), self.state)
         self.assertTrue(any("Попробуйте другое написание" in text for text in sent), sent)
         self.assertEqual(self.db.watchlist(42), [])
+
+
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram is not installed")
+class StatusCommandTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        from topbot import bot as bot_module
+
+        self.bot = bot_module
+        self.db = Database(":memory:")
+        self.db.ensure_user(42, "tester")
+        self.db.ensure_user(1, "Boss")
+        bot_module.ctx.db = self.db
+        bot_module.ctx.admin_ids = ()
+        bot_module.ctx.admin_usernames = ()
+
+    def tearDown(self) -> None:
+        self.bot.ctx.db = None
+        self.bot.ctx.admin_ids = ()
+        self.db.close()
+
+    def _message(self, user_id: int, sent: list[str]):
+        class FakeMessage:
+            from_user = type("U", (), {"id": user_id, "username": "tester", "first_name": "Tester"})()
+
+            async def answer(self, answer_text, **kwargs):
+                sent.append(answer_text)
+
+        return FakeMessage()
+
+    async def test_status_is_admin_only(self):
+        sent: list[str] = []
+        await self.bot.cmd_status(self._message(42, sent))
+        self.assertEqual(sent, ["Команда только для администратора"])
+
+    async def test_status_shows_poll_state_for_admin(self):
+        self.bot.ctx.admin_ids = (1,)
+        self.db.record_poll("auctions", int(time.time()) - 60, 100, True, 42)
+        sent: list[str] = []
+        await self.bot.cmd_status(self._message(1, sent))
+        self.assertIn("Лотов активно", sent[0])
+        self.assertIn("Последний опрос", sent[0])
+
+    def test_status_is_not_published_in_commands(self):
+        self.assertNotIn("status", [command.command for command in self.bot.COMMANDS])
 
 
 if __name__ == "__main__":

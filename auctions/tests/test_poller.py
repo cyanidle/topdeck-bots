@@ -9,7 +9,6 @@ import unittest
 from topbot.db import Database, title_hash
 from topbot.matching import MATCH_VERSION
 from topbot.models import Lot, LotDetail, PollStats
-from topbot.notifier import Notifier
 from topbot.poller import ADMIN_ALERT_COOLDOWN_S, AdminAlerter, AuctionPoller, ensure_matches
 
 NOW = 1_795_400_000
@@ -59,15 +58,6 @@ class FakeClient:
         return LotDetail(lot_id=lot_id, composition=self.compositions.get(lot_id, ()))
 
 
-class RecordingNotifier(Notifier):
-    def __init__(self, db: Database):
-        self.sent: list[tuple[int, str, int | None]] = []
-        super().__init__(db, sender=self._send)
-
-    async def _send(self, user_id: int, text: str) -> None:
-        self.sent.append((user_id, text, None))
-
-
 class PollerTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.db = Database(":memory:")
@@ -75,51 +65,39 @@ class PollerTest(unittest.IsolatedAsyncioTestCase):
         self.card_id = self.db.upsert_card("Bayou", "bayou", name_ru=None)
         self.db.upsert_card("Tarmogoyf", "tarmogoyf", name_ru="Тармогойф")
         self.db.add_to_watchlist(42, self.card_id)
-        self.notifier = RecordingNotifier(self.db)
 
     def tearDown(self) -> None:
         self.db.close()
 
     def poller(self, lots: list[Lot], compositions: dict[int, tuple[str, ...]] | None = None) -> AuctionPoller:
-        return AuctionPoller(self.db, FakeClient(lots, compositions), self.notifier, clock=lambda: NOW)
+        return AuctionPoller(self.db, FakeClient(lots, compositions), clock=lambda: NOW)
 
-    async def test_notifies_once_per_window(self):
+    async def test_watched_lot_is_actually_matched(self):
         lots = [lot(1, "Bayou - Reserved List (3ED, №283)", NOW + 600, current_bid=1488)]
         stats = await self.poller(lots).poll_once()
-        self.assertEqual(stats.notifications, 1)
-        self.assertEqual(len(self.notifier.sent), 1)
-        user_id, text, _ = self.notifier.sent[0]
-        self.assertEqual(user_id, 42)
-        self.assertIn("Bayou", text)
-        self.assertIn("10 мин", text)
-        self.assertIn("1\u00a0488 ₽", text)
+        self.assertEqual(stats.watched_lots, 1)
+        self.assertEqual(matched_cards(self.db, 1), [self.card_id])
 
-        stats = await self.poller(lots).poll_once()
-        self.assertEqual(stats.notifications, 0)
-
-    async def test_unwatched_card_is_silent(self):
+    async def test_unwatched_card_is_not_counted(self):
         lots = [lot(2, "Mox Diamond (STH, 100)", NOW + 600)]
         stats = await self.poller(lots).poll_once()
-        self.assertEqual(stats.notifications, 0)
+        self.assertEqual(stats.watched_lots, 0)
 
-    async def test_lot_far_in_future(self):
+    async def test_lot_far_in_future_is_still_tracked(self):
         lots = [lot(3, "Bayou (3ED, №283)", NOW + 5 * 86400)]
         stats = await self.poller(lots).poll_once()
-        self.assertEqual(stats.notifications, 0)
+        self.assertEqual(stats.watched_lots, 1)
 
-    async def test_multi_card_lot_notifies_from_composition(self):
+    async def test_multi_card_lot_matches_from_composition(self):
         lots = [lot(20, "Полноформатные небазовые земли", NOW + 600)]
         stats = await self.poller(lots, {20: ("Necroblossom Snarl", "Bayou")}).poll_once()
-        self.assertEqual(stats.notifications, 1)
-        _, text, _ = self.notifier.sent[0]
-        self.assertIn("Bayou", text)
-        self.assertIn("Из вашего списка в лоте", text)
+        self.assertEqual(stats.watched_lots, 1)
+        self.assertEqual(matched_cards(self.db, 20), [self.card_id])
 
     async def test_composition_is_fetched_once(self):
         lots = [lot(21, "Полноформатные Тропы KHM", NOW + 600)]
         client_lots = lots
-        poller = AuctionPoller(self.db, FakeClient(client_lots, {21: ("Bayou",)}), self.notifier,
-                               clock=lambda: NOW)
+        poller = AuctionPoller(self.db, FakeClient(client_lots, {21: ("Bayou",)}), clock=lambda: NOW)
         await poller.poll_once()
         await poller.poll_once()
         self.assertEqual(poller.client.lot_fetches, [21])
@@ -127,15 +105,15 @@ class PollerTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_lot_already_matched_by_title_is_not_fetched(self):
         lots = [lot(22, "Bayou - Reserved List (3ED, №283)", NOW + 600)]
-        poller = AuctionPoller(self.db, FakeClient(lots, {22: ("Bayou",)}), self.notifier, clock=lambda: NOW)
+        poller = AuctionPoller(self.db, FakeClient(lots, {22: ("Bayou",)}), clock=lambda: NOW)
         await poller.poll_once()
         self.assertEqual(poller.client.lot_fetches, [])
 
     async def test_russian_title_matches(self):
         lots = [lot(4, "Фойл Тармогойф (FUT, 153, RU, NM)", NOW + 600)]
         self.db.add_to_watchlist(42, 2)
-        stats = await self.poller(lots).poll_once()
-        self.assertEqual(stats.notifications, 1)
+        await self.poller(lots).poll_once()
+        self.assertEqual(matched_cards(self.db, 4), [2])
 
     async def test_vanished_lot_is_marked_finished(self):
         await self.poller([lot(5, "Bayou (3ED, №283)", NOW - 60)]).poll_once()
@@ -360,48 +338,6 @@ class MoneyFormatTest(unittest.TestCase):
         self.assertIn("Yavimaya, Cradle of Growth", text)
         self.assertIn("1\u00a0488 ₽", text)
         self.assertIn("2\u00a0000 ₽", text)
-
-
-class QuietHoursDeferralTest(unittest.IsolatedAsyncioTestCase):
-    def setUp(self) -> None:
-        self.db = Database(":memory:")
-        self.db.ensure_user(42, "tester")
-        self.card = self.db.upsert_card("Bayou", "bayou")
-        self.db.add_to_watchlist(42, self.card)
-        self.db.update_quiet(42, 0, 1439)
-        self.sent: list[str] = []
-        self.notifier = Notifier(self.db, sender=self._send)
-
-    def tearDown(self) -> None:
-        self.db.close()
-
-    async def _send(self, user_id: int, text: str) -> None:
-        self.sent.append(text)
-
-    def _poller(self, lots: list[Lot]) -> AuctionPoller:
-        return AuctionPoller(self.db, FakeClient(lots), self.notifier, clock=lambda: NOW)
-
-    async def test_window_is_deferred_not_lost(self):
-        lots = [lot(11, "Bayou (3ED, №283)", NOW + 3 * 3600)]
-        stats = await self._poller(lots).poll_once()
-        self.assertEqual(stats.notifications, 0)
-        self.assertEqual(self.sent, [])
-        row = self.db.conn.execute("SELECT state FROM notifications WHERE ref_id=11").fetchone()
-        self.assertEqual(row["state"], "quiet_hours")
-        self.assertEqual(self.db.sent_windows(42, "auction_window", 11), set())
-
-    async def test_deferred_window_is_delivered_after_quiet_hours(self):
-        lots = [lot(12, "Bayou (3ED, №283)", NOW + 3 * 3600)]
-        await self._poller(lots).poll_once()
-        self.assertEqual(self.sent, [])
-        self.db.update_quiet(42, 0, 0)
-        await self._poller(lots).poll_once()
-        self.assertEqual(len(self.sent), 1)
-        self.assertIn("Bayou", self.sent[0])
-        row = self.db.conn.execute("SELECT state FROM notifications WHERE ref_id=12").fetchone()
-        self.assertEqual(row["state"], "sent")
-        await self._poller(lots).poll_once()
-        self.assertEqual(len(self.sent), 1)
 
 
 class AdminAlerterTest(unittest.IsolatedAsyncioTestCase):

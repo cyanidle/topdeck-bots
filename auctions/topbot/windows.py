@@ -3,12 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 
-SLACK_FOR_LONG_WINDOWS = 420
 URGENT_WINDOW = 900
 
 
-def due_window(remaining_s: int, windows: tuple[int, ...], sent: set[int],
-               slack: int = SLACK_FOR_LONG_WINDOWS) -> int | None:
+def due_window(remaining_s: int, windows: tuple[int, ...], sent: set[int]) -> int | None:
+    """Самое узкое назревшее окно: `remaining <= window`, окно не отправлено и уже́ любого отправленного.
+
+    Окно с остатком меньше половины считается истёкшим и не досылается.
+    """
     if remaining_s <= 0:
         return None
     narrowest_sent = min(sent) if sent else None
@@ -16,7 +18,7 @@ def due_window(remaining_s: int, windows: tuple[int, ...], sent: set[int],
         window for window in windows
         if window not in sent
         and (narrowest_sent is None or window < narrowest_sent)
-        and remaining_s <= window + (slack if window > URGENT_WINDOW else 0)
+        and remaining_s <= window
         and remaining_s >= window // 2
     ]
     if not firing:

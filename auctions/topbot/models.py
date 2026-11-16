@@ -82,7 +82,6 @@ class PollStats:
     lots: int = 0
     matched_lots: int = 0
     watched_lots: int = 0
-    notifications: int = 0
     vanished: int = 0
     compositions: int = 0
 

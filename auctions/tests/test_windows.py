@@ -4,7 +4,6 @@ import unittest
 from datetime import datetime, timezone
 
 from topbot.windows import (
-    SLACK_FOR_LONG_WINDOWS,
     decide_quiet,
     due_window,
     humanize_remaining,
@@ -18,8 +17,9 @@ class DueWindowTest(unittest.TestCase):
     def test_too_far_away(self):
         self.assertIsNone(due_window(90000, WINDOWS, set()))
 
-    def test_day_window_with_slack(self):
-        self.assertEqual(due_window(86400 + SLACK_FOR_LONG_WINDOWS - 10, WINDOWS, set()), 86400)
+    def test_day_window_fires_at_its_boundary(self):
+        self.assertEqual(due_window(86400, WINDOWS, set()), 86400)
+        self.assertIsNone(due_window(86400 + 1, WINDOWS, set()))
 
     def test_already_sent_is_skipped(self):
         self.assertEqual(due_window(3000, WINDOWS, {86400}), 3600)
@@ -28,8 +28,8 @@ class DueWindowTest(unittest.TestCase):
         self.assertEqual(due_window(700, WINDOWS, set()), 900)
 
     def test_stale_window_is_dropped(self):
-        self.assertIsNone(due_window(6 * 3600, WINDOWS, set(), slack=0))
-        self.assertEqual(due_window(13 * 3600, WINDOWS, set(), slack=0), 86400)
+        self.assertIsNone(due_window(6 * 3600, WINDOWS, set()))
+        self.assertEqual(due_window(13 * 3600, WINDOWS, set()), 86400)
 
     def test_broader_window_is_not_sent_after_narrower(self):
         self.assertIsNone(due_window(10800, WINDOWS, {10800}))
@@ -46,7 +46,7 @@ class DueWindowTest(unittest.TestCase):
         self.assertIsNone(due_window(0, WINDOWS, set()))
         self.assertIsNone(due_window(-42, WINDOWS, set()))
 
-    def test_urgent_window_has_no_slack(self):
+    def test_urgent_window_fires_only_inside_its_range(self):
         self.assertIsNone(due_window(901, WINDOWS, {86400, 10800, 3600}))
         self.assertEqual(due_window(899, WINDOWS, {86400, 10800, 3600}), 900)
 

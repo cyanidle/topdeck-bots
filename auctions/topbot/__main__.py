@@ -12,6 +12,8 @@ from .clients.topdeck import TopdeckClient
 from .config import Settings
 from .db import Database
 from .poller import AdminAlerter, AuctionPoller
+from .prices import PricePoller
+from .scheduler import WindowScheduler
 from .webui import make_session, serve
 
 
@@ -43,11 +45,15 @@ async def main() -> None:
     catalog = CardCatalog(db, scryfall)
     dispatcher = create_dispatcher(settings, db, topdeck, scryfall, catalog)
     notifier = build_notifier(db, bot)
-    poller = AuctionPoller(db, topdeck, notifier)
+    poller = AuctionPoller(db, topdeck)
+    scheduler = WindowScheduler(db, notifier)
+    prices = PricePoller(db, topdeck)
     alerter = AdminAlerter(db, TelegramSender(bot), admin_ids=settings.admin_ids,
                            admin_usernames=settings.admin_usernames)
 
     tasks = [asyncio.create_task(_poll_loop(settings, poller, alerter), name="poller"),
+             asyncio.create_task(scheduler.run(), name="windows"),
+             asyncio.create_task(_prices_loop(settings, prices), name="prices"),
              asyncio.create_task(_catalog_sync(catalog), name="catalog")]
     if settings.web_port:
         tasks.append(asyncio.create_task(serve(settings, db), name="webui"))
@@ -102,6 +108,16 @@ async def _poll_loop(settings: Settings, poller: AuctionPoller, alerter: AdminAl
         else:
             await _alert(logger, alerter.on_success, stats)
         await asyncio.sleep(settings.poll_interval_s)
+
+
+async def _prices_loop(settings: Settings, poller: PricePoller) -> None:
+    logger = logging.getLogger("prices")
+    while True:
+        try:
+            await poller.poll_once()
+        except Exception:
+            logger.exception("price poll failed")
+        await asyncio.sleep(settings.prices_interval_s)
 
 
 if __name__ == "__main__":

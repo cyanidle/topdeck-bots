@@ -100,10 +100,32 @@ CREATE TABLE notifications (
     UNIQUE (user_id, kind, ref_id, window_s)
 );
 
--- 7. Наблюдаемость и служебное ----------------------------------------------
+-- 7. Кэш цен у продавцов -----------------------------------------------------
+CREATE TABLE card_offers (                           -- актуальные предложения по картам watchlist'а
+    card_id     INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+    seller_key  TEXT NOT NULL,                       -- normalize(seller_name or source): дедуп по продавцу
+    source      TEXT NOT NULL,                       -- topdeck | MtgRussia.com | ...
+    seller_name TEXT,
+    cost        INTEGER NOT NULL,
+    qty         INTEGER NOT NULL DEFAULT 1,
+    url         TEXT,
+    line        TEXT NOT NULL DEFAULT '',            -- строка продавца (сет/номер/язык/состояние)
+    stamp       TEXT,                                -- «прайсы обновлены» с сайта
+    fetched_at  INTEGER NOT NULL,
+    PRIMARY KEY (card_id, seller_key)
+);
+CREATE INDEX card_offers_cost_idx ON card_offers(card_id, cost);
+
+CREATE TABLE card_price_sync (                       -- «карту уже опрашивали», даже если предложений нет
+    card_id    INTEGER PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE,
+    fetched_at INTEGER NOT NULL,
+    offers     INTEGER NOT NULL
+);
+
+-- 8. Наблюдаемость и служебное ----------------------------------------------
 CREATE TABLE poll_runs (
     id              INTEGER PRIMARY KEY,
-    kind            TEXT NOT NULL,                  -- auctions | offers
+    kind            TEXT NOT NULL,                  -- auctions | prices
     started_at      INTEGER NOT NULL,
     duration_ms     INTEGER,
     ok              INTEGER NOT NULL,
