@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from topbot.messages import offer_details, render_offer_line
+from topbot.messages import offer_details, plural, render_offer_line
 from topbot.models import Offer
 
 
@@ -71,6 +71,14 @@ class RenderOfferLineTest(unittest.TestCase):
     def test_no_details_leaves_short_line(self):
         text = render_offer_line(offer("1 Snapcaster Mage", cost=1000))
         self.assertEqual(text, "1\u00a0000 ₽ ×1 — Umezawa (topdeck)")
+
+
+class PluralTest(unittest.TestCase):
+    def test_russian_forms(self):
+        cases = {1: "лот", 2: "лота", 4: "лота", 5: "лотов", 11: "лотов", 12: "лотов", 21: "лот",
+                 22: "лота", 25: "лотов", 101: "лот", 111: "лотов"}
+        for count, expected in cases.items():
+            self.assertEqual(plural(count, "лот", "лота", "лотов"), expected, count)
 
 
 if __name__ == "__main__":

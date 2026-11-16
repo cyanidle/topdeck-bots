@@ -56,5 +56,5 @@ Python 3.12+ · aiogram 3.x · SQLite (WAL) · Xray-core (egress в Telegram, в
 * Этап 0 (исследование) — выполнен: `docs/research-topdeck-api.md`, `tools/topdeck_probe.py` проверен на живом сайте.
 * Этап 1 (бот + watchlist) — выполнен: `/start /menu /add /list /remove /price /status /settings /mute /help /admin`, локальный каталог Scryfall-имён с автокомплитом и дизамбигуацией.
 * Этап 2 (поллер аукционов + уведомления) — выполнен: окна 1д/3ч/1ч/15м, дедуп, тихие часы, `/mute`, матчинг лотов по названию (точное/префикс/нечёткое) и по составу, алерты админу о серии сбоев.
-* Тесты: 174 unittest (`.venv/bin/python -m unittest discover -s tests -t .`).
-* Вне скоупа (решение 2026-11-16): суточный `OfferPoller` со снимками цен и `price_drop`, история завершённых лотов, полноценный веб-UI, деплой на сервер. Цены доступны по запросу — `/price` и кнопка «💰 Цена у продавцов» в `/list`.
+* Тесты: 193 unittest (`.venv/bin/python -m unittest discover -s tests -t .`).
+* Вне скоупа (решение 2026-11-16): суточный `OfferPoller` со снимками цен и `price_drop`, история завершённых лотов, полноценный веб-UI, деплой на сервер. Цены доступны по запросу — `/price` и ссылка «цены» в `/list`.

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
 from dataclasses import replace
+from html import escape
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -20,7 +22,7 @@ from .clients.scryfall import ScryfallClient
 from .config import Settings
 from .db import Database
 from .matching import normalize
-from .messages import money, render_offer_line
+from .messages import money, plural, render_offer_line
 from .models import Card, Offer, WatchlistCard
 from .notifier import Notifier
 from .poller import ensure_matches
@@ -42,6 +44,7 @@ class Context:
     topdeck: TopdeckClient | None = None
     scryfall: ScryfallClient | None = None
     catalog: CardCatalog | None = None
+    bot_username: str = ""
     admin_ids: tuple[int, ...] = ()
     admin_usernames: tuple[str, ...] = ()
 
@@ -87,7 +90,23 @@ def main_menu() -> ReplyKeyboardMarkup:
 
 
 async def setup_bot_ui(bot: Bot) -> None:
+    ctx.bot_username = await _bot_username(bot)
     await bot.set_my_commands(COMMANDS)
+    log.info("bot ui ready", extra={"username": ctx.bot_username, "commands": len(COMMANDS)})
+
+
+async def _bot_username(bot: Bot, attempts: int = 3) -> str:
+    for attempt in range(attempts):
+        try:
+            me = await bot.me()
+        except (TelegramNetworkError, OSError):
+            if attempt == attempts - 1:
+                raise
+            log.warning("getMe failed, retrying", extra={"attempt": attempt + 1}, exc_info=True)
+            await asyncio.sleep(2 * (attempt + 1))
+            continue
+        return me.username or ""
+    raise RuntimeError("unreachable")
 
 
 def is_admin(user) -> bool:
@@ -268,11 +287,30 @@ async def _process_queries(message: Message, state: FSMContext, queries: list[st
                              reply_markup=_keyboard(candidates))
 
 
+async def _handle_deep_link(message: Message, payload: str) -> bool:
+    kind, _, raw_id = payload.partition("_")
+    if kind not in ("price", "rm") or not raw_id.isdigit():
+        return False
+    card_id = int(raw_id)
+    db = _database()
+    if kind == "rm":
+        removed = db.remove_from_watchlist(message.from_user.id, card_id)
+        log.info("card removed via deep link", extra={"user_id": message.from_user.id, "card_id": card_id,
+                                                     "removed": removed})
+        await message.answer("Карта удалена. /list покажет актуальный список." if removed
+                             else "Карты уже нет в списке.")
+        return True
+    await _send_card_prices(message, message.from_user.id, card_id)
+    return True
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     db = _database()
     user = message.from_user
     db.ensure_user(user.id, user.username, user.first_name)
+    if await _handle_deep_link(message, (message.text or "").partition(" ")[2].strip()):
+        return
     await message.answer(
         "Этот бот хранит ваш список карт и следит за аукционами на topdeck.ru: как только по карте "
         "из списка появляется лот и время подходит к концу, приходит уведомление — за сутки, за 3 часа, "
@@ -281,7 +319,7 @@ async def cmd_start(message: Message) -> None:
         "Как пользоваться:\n"
         "1. «➕ Добавить» — введите название карты, можно часть и по-русски, и выберите из подсказок.\n"
         "2. «📋 Список» — ваши карты: сколько сейчас лотов, минимальная цена, ссылка на ближайший "
-        "аукцион и кнопка «💰 Цена у продавцов», чтобы понять, выгодный ли аукцион.\n"
+        "аукцион и ссылки «цены» (сколько карта стоит у магазинов и продавцов) и «удалить».\n"
         "3. «⚙️ Настройки» — какие уведомления присылать и в какие часы молчать.\n"
         "\n"
         "Если кнопки внизу спрятались, пока вы печатали, вернуть их можно командой /menu. "
@@ -365,58 +403,66 @@ async def cb_pick(callback: CallbackQuery, state: FSMContext) -> None:
         await state.clear()
 
 
+def _start_link(payload: str) -> str:
+    if not ctx.bot_username:
+        raise RuntimeError("bot username is unknown: bot.me() must run at startup")
+    return f"https://t.me/{ctx.bot_username}?start={payload}"
+
+
 def _card_line(card: WatchlistCard) -> str:
-    parts: list[str] = []
-    if card.lots_count:
-        line = f"лотов: {card.lots_count}"
+    name = escape(card.name_en, quote=False)
+    if card.next_lot_id:
+        name = f'<a href="{lot_url(card.next_lot_id)}">{name}</a>'
+    if not card.lots_count:
+        line = f"{name} — лотов нет"
+    else:
+        parts = [f"{card.lots_count} {plural(card.lots_count, 'лот', 'лота', 'лотов')}"]
         if card.lots_min_price:
-            line += f", от {money(card.lots_min_price)} ₽"
+            parts.append(f"от {money(card.lots_min_price)} ₽")
         if card.next_end_ts:
             remaining = int(card.next_end_ts) - int(time.time())
             if remaining > 0:
-                line += f", ближайший через {humanize_remaining(remaining)}"
-        parts.append(line)
-    else:
-        parts.append("лотов нет")
-    text = f"• {card.name_en} — " + "; ".join(parts)
-    if card.next_lot_id:
-        text += f"\n   {lot_url(card.next_lot_id)}"
-    return text
+                when = "до конца" if card.lots_count == 1 else "ближайший через"
+                parts.append(f"{when} {humanize_remaining(remaining)}")
+        line = f"{name} — " + ", ".join(parts)
+    actions = " · ".join([
+        f'<a href="{_start_link(f"price_{card.card_id}")}">цены</a>',
+        f'<a href="{_start_link(f"rm_{card.card_id}")}">удалить</a>',
+    ])
+    return f"{line}\n   {actions}"
 
 
-def _watchlist_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
+def _watchlist_view(user_id: int) -> str:
     ensure_matches(_database())
     cards = _database().watchlist_overview(user_id)
     if not cards:
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Добавить карту", callback_data="hint_add")],
-        ])
-        return "Список пуст. Добавьте карты: /add Lightning Bolt", keyboard
-    buttons: list[list[InlineKeyboardButton]] = []
-    for card in cards:
-        buttons.append([InlineKeyboardButton(text=f"❌ {card.name_en}", callback_data=f"rm:{card.card_id}")])
-        actions = []
-        if card.next_lot_id:
-            actions.append(InlineKeyboardButton(text="🔗 Аукцион", url=lot_url(card.next_lot_id)))
-        actions.append(InlineKeyboardButton(text="💰 Цена у продавцов", callback_data=f"price:{card.card_id}"))
-        buttons.append(actions)
+        return "📋 Watchlist пуст.\n\nДобавьте карты: /add Lightning Bolt — или кнопка «➕ Добавить» в меню."
     with_lots = sum(1 for card in cards if card.lots_count)
-    header = f"Watchlist ({len(cards)}), с лотами: {with_lots}"
-    return header + ":\n" + "\n".join(_card_line(card) for card in cards), InlineKeyboardMarkup(inline_keyboard=buttons)
+    header = (f"📋 Watchlist: {len(cards)} {plural(len(cards), 'карта', 'карты', 'карт')} · "
+              f"с лотами: {with_lots}")
+    return header + "\n\n" + "\n\n".join(_card_line(card) for card in cards)
+
+
+async def _send_card_prices(message: Message, user_id: int, card_id: int) -> bool:
+    item = next((row for row in _database().watchlist(user_id) if row.card_id == card_id), None)
+    if item is None:
+        await message.answer("Карты нет в списке — /list покажет актуальный.")
+        return False
+    await _send_prices(message, item.name_en, user_id=user_id)
+    return True
 
 
 @router.message(Command("list"))
 async def cmd_list(message: Message) -> None:
-    text, keyboard = _watchlist_view(message.from_user.id)
-    await message.answer(text, reply_markup=keyboard)
+    await message.answer(_watchlist_view(message.from_user.id), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "list")
 async def cb_list(callback: CallbackQuery) -> None:
-    text, keyboard = _watchlist_view(callback.from_user.id)
+    text = _watchlist_view(callback.from_user.id)
     await _answer(callback)
     if callback.message:
-        await callback.message.answer(text, reply_markup=keyboard)
+        await callback.message.answer(text, parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("rm:"))
@@ -593,10 +639,10 @@ async def cmd_help(message: Message) -> None:
         "Как пользоваться:\n"
         "• /menu — вернуть кнопки, если они спрятались при вводе текста.\n"
         "• «➕ Добавить» или /add — введите часть названия (можно по-русски), выберите из подсказок.\n"
-        "• «📋 Список» — ваши карты: цены, ближайший лот со ссылкой и кнопка «💰 Цена у продавцов» "
-        "(сколько карта стоит у магазинов и продавцов — чтобы понять, выгодный ли аукцион); "
-        "❌ удаляет карту.\n"
-        "• /price <карта> — то же, что «💰 Цена у продавцов», но для любой карты.\n"
+        "• «📋 Список» — ваши карты: под каждой — сколько лотов, минимальная цена и время до конца; "
+        "имя карты ведёт на ближайший аукцион, ссылки «цены» (сколько карта стоит у магазинов "
+        "и продавцов) и «удалить» — прямо в тексте.\n"
+        "• /price <карта> — то же, что ссылка «цены», но для любой карты.\n"
         "• «⚙️ Настройки» — окна уведомлений (1д/3ч/1ч/15м).\n"
         "• /mute 1h|8h|off — пауза уведомлений (например, на ночь или в отпуске).\n"
         "• «ℹ️ Статус» — когда поллер последний раз обновлял лоты.\n"
@@ -613,20 +659,15 @@ async def btn_add(message: Message, state: FSMContext) -> None:
 
 @router.message(F.text == BUTTON_LIST)
 async def btn_list(message: Message) -> None:
-    text, keyboard = _watchlist_view(message.from_user.id)
-    await message.answer(text, reply_markup=keyboard)
+    await message.answer(_watchlist_view(message.from_user.id), parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("price:"))
 async def cb_card_price(callback: CallbackQuery) -> None:
     card_id = int(callback.data.split(":", 1)[1])
-    item = next((row for row in _database().watchlist(callback.from_user.id) if row.card_id == card_id), None)
-    if item is None:
-        await _answer(callback, "Карты нет в списке — обновите /list")
-        await _replace_with_text(callback, "Карта уже не в списке — /list покажет актуальный.")
-        return
     await _answer(callback, "Смотрю цены у продавцов…")
-    await _send_prices(callback.message, item.name_en, user_id=callback.from_user.id)
+    if callback.message:
+        await _send_card_prices(callback.message, callback.from_user.id, card_id)
 
 
 @router.message(F.text == BUTTON_SETTINGS)

@@ -11,9 +11,9 @@ except ImportError:  # pragma: no cover
     HAS_AIOGRAM = False
 
 from topbot.catalog import CardCatalog
-from topbot.db import Database
+from topbot.db import Database, title_hash
 from topbot.matching import normalize
-from topbot.models import Card, Offer
+from topbot.models import Card, Lot, Offer
 
 
 class FakeScryfall:
@@ -162,20 +162,47 @@ class WatchlistViewTest(unittest.TestCase):
         self.card = self.db.upsert_card("Tarmogoyf", "tarmogoyf", name_ru="Тармогойф")
         self.db.add_to_watchlist(42, self.card)
         bot_module.ctx.db = self.db
+        bot_module.ctx.bot_username = "topdeck_test_bot"
 
     def tearDown(self) -> None:
         self.db.close()
+        self.bot.ctx.bot_username = ""
 
     def test_view_uses_the_requested_user_not_the_sender(self):
-        text, keyboard = self.bot._watchlist_view(42)
+        text = self.bot._watchlist_view(42)
         self.assertIn("Tarmogoyf", text)
-        self.assertEqual(keyboard.inline_keyboard[0][0].callback_data, f"rm:{self.card}")
-        self.assertEqual(keyboard.inline_keyboard[1][-1].callback_data, f"price:{self.card}")
+        self.assertNotIn("•", text)
+
+    def test_actions_are_text_links(self):
+        text = self.bot._watchlist_view(42)
+        self.assertIn('href="https://t.me/topdeck_test_bot?start=price_', text)
+        self.assertIn('href="https://t.me/topdeck_test_bot?start=rm_', text)
+        self.assertIn(f"?start=price_{self.card}", text)
+        self.assertIn(f"?start=rm_{self.card}", text)
+        self.assertIn(">цены</a>", text)
+        self.assertIn(">удалить</a>", text)
+
+    def test_card_name_links_to_the_nearest_lot(self):
+        self.db.upsert_lot(Lot(id=7, title="Bayou test", end_ts=int(time.time()) + 3600,
+                               start_ts=int(time.time()) - 3600, start_bid=500, current_bid=500, bid_count=1,
+                               bin_value=0, seller_id=1, seller_name="seller", seller_city="Москва",
+                               seller_refs=1, shipping_quick="Москва, почта", image_url=None,
+                               url="https://topdeck.ru/lot/7"), int(time.time()))
+        self.db.save_lot_cards(7, [(self.card, 1.0, "exact_en")], title_hash("Bayou test"))
+        text = self.bot._watchlist_view(42)
+        self.assertIn('<a href="https://topdeck.ru/apps/toptrade/auctions/7">Tarmogoyf</a>', text)
+
+    def test_card_names_are_html_escaped(self):
+        risky = self.db.upsert_card("R&D's Secret Lair", "r d s secret lair")
+        self.db.add_to_watchlist(42, risky)
+        text = self.bot._watchlist_view(42)
+        self.assertIn("R&amp;D's Secret Lair", text)
+        self.assertNotIn("&amp;amp;", text)
 
     def test_view_for_unknown_user_is_empty(self):
-        text, keyboard = self.bot._watchlist_view(777)
-        self.assertIn("Список пуст", text)
-        self.assertEqual(keyboard.inline_keyboard[0][0].callback_data, "hint_add")
+        text = self.bot._watchlist_view(777)
+        self.assertIn("Watchlist пуст", text)
+        self.assertNotIn("t.me", text)
 
 
 @unittest.skipUnless(HAS_AIOGRAM, "aiogram is not installed")
@@ -339,6 +366,7 @@ class CommandTextTest(unittest.IsolatedAsyncioTestCase):
 
         class FakeMessage:
             from_user = type("U", (), {"id": 42, "username": "tester", "first_name": "Tester"})()
+            text = "/start"
 
             async def answer(self, text, **kwargs):
                 sent.append(text)
@@ -474,11 +502,15 @@ class CardPriceButtonTest(unittest.IsolatedAsyncioTestCase):
         self.bot.ctx.db = None
         self.db.close()
 
-    def test_list_has_a_price_button_for_every_card(self):
-        text, keyboard = self.bot._watchlist_view(42)
+    def test_list_has_price_link_for_every_card(self):
+        self.bot.ctx.bot_username = "topdeck_test_bot"
+        try:
+            text = self.bot._watchlist_view(42)
+        finally:
+            self.bot.ctx.bot_username = ""
         self.assertIn("Tarmogoyf", text)
-        self.assertEqual(keyboard.inline_keyboard[0][0].callback_data, f"rm:{self.card}")
-        self.assertEqual(keyboard.inline_keyboard[1][-1].callback_data, f"price:{self.card}")
+        self.assertIn(f"https://t.me/topdeck_test_bot?start=price_{self.card}", text)
+        self.assertIn(f"https://t.me/topdeck_test_bot?start=rm_{self.card}", text)
 
     async def test_price_button_asks_topdeck_for_seller_offers(self):
         sent: list[str] = []
@@ -529,8 +561,7 @@ class CardPriceButtonTest(unittest.IsolatedAsyncioTestCase):
 
         await self.bot.cb_card_price(FakeCallback())
         self.assertEqual(self.bot.ctx.topdeck.calls, 0)
-        self.assertTrue(any("не в списке" in text for text in edited))
-        self.assertTrue(answers and "обновите" in (answers[0] or ""))
+        self.assertTrue(any("нет в списке" in text for text in edited))
 
     def test_number_of_buttons_matches_menu(self):
         from topbot import bot as bot_module
@@ -538,6 +569,63 @@ class CardPriceButtonTest(unittest.IsolatedAsyncioTestCase):
         labels = [button.text for row in bot_module.main_menu().keyboard for button in row]
         self.assertEqual(labels, list(bot_module.MENU_TEXTS))
         self.assertNotIn("💰 Цена", labels)
+
+
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram is not installed")
+class StartDeepLinkTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        from topbot import bot as bot_module
+
+        self.bot = bot_module
+        self.db = Database(":memory:")
+        self.db.ensure_user(42, "tester")
+        self.card = self.db.upsert_card("Tarmogoyf", "tarmogoyf", name_ru="Тармогойф")
+        self.db.add_to_watchlist(42, self.card)
+        self.topdeck = FakeTopdeck([make_offer("Tarmogoyf", "Тармогойф", seller_name="Umezawa", cost=300)])
+        bot_module.ctx.db = self.db
+        bot_module.ctx.topdeck = self.topdeck
+        bot_module.ctx.catalog = CardCatalog(self.db)
+        bot_module.ctx.scryfall = None
+        self.sent: list[str] = []
+
+    def tearDown(self) -> None:
+        self.bot.ctx.db = None
+        self.bot.ctx.topdeck = None
+        self.bot.ctx.catalog = None
+        self.db.close()
+
+    def _message(self, text: str):
+        sent = self.sent
+
+        class FakeMessage:
+            from_user = type("U", (), {"id": 42, "username": "tester", "first_name": "Tester"})()
+
+            async def answer(self, answer_text, **kwargs):
+                sent.append(answer_text)
+
+        message = FakeMessage()
+        message.text = text
+        return message
+
+    async def test_price_deep_link_shows_offers(self):
+        await self.bot.cmd_start(self._message(f"/start price_{self.card}"))
+        self.assertEqual(self.topdeck.calls, 1)
+        self.assertTrue(any("Минимальные предложения" in text for text in self.sent))
+        self.assertFalse(any("Этот бот хранит" in text for text in self.sent))
+
+    async def test_remove_deep_link_deletes_card(self):
+        await self.bot.cmd_start(self._message(f"/start rm_{self.card}"))
+        self.assertEqual(self.db.watchlist(42), [])
+        self.assertIn("Карта удалена", self.sent[0])
+
+    async def test_remove_of_missing_card_is_explained(self):
+        await self.bot.cmd_start(self._message("/start rm_999"))
+        self.assertIn("Карты уже нет в списке", self.sent[0])
+
+    async def test_unknown_payload_shows_welcome(self):
+        await self.bot.cmd_start(self._message("/start something"))
+        self.assertTrue(any("Этот бот хранит" in text for text in self.sent))
+        self.assertEqual(len(self.db.watchlist(42)), 1)
 
 
 @unittest.skipUnless(HAS_AIOGRAM, "aiogram is not installed")
