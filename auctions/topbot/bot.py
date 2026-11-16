@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from dataclasses import replace
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -114,6 +115,8 @@ async def _add_card(user_id: int, name: str) -> tuple[bool, str]:
     card: Card | None = None
     if ctx.scryfall is not None:
         card = await ctx.scryfall.named_exact(name) or await ctx.scryfall.named_fuzzy(name)
+        if card is not None and not card.name_ru:
+            card = replace(card, name_ru=await ctx.scryfall.localized_name(card.name_en))
     card = card or Card(name_en=name)
     db = _database()
     db.ensure_user(user_id)
@@ -219,6 +222,7 @@ async def _expand_items(items: list[str]) -> tuple[list[str], dict[str, list[str
 
 
 async def _process_queries(message: Message, state: FSMContext, queries: list[str]) -> None:
+    _database().ensure_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     log.info("add request", extra={"user_id": message.from_user.id,
                                    "raw": " | ".join(queries)[:200]})
     added: list[str] = []
@@ -538,7 +542,7 @@ MUTE_OFF = ("off", "выкл")
 async def cmd_mute(message: Message) -> None:
     argument = (message.text or "").partition(" ")[2].strip().lower()
     db = _database()
-    db.ensure_user(message.from_user.id)
+    db.ensure_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     if argument in MUTE_OFF:
         db.update_mute(message.from_user.id, None)
         await message.answer("Пауза снята — уведомления приходят как обычно.")
@@ -564,7 +568,7 @@ async def cmd_settings(message: Message) -> None:
 async def cb_toggle_window(callback: CallbackQuery) -> None:
     window = int(callback.data.split(":", 1)[1])
     db = _database()
-    user = db.ensure_user(callback.from_user.id)
+    user = db.ensure_user(callback.from_user.id, callback.from_user.username, callback.from_user.first_name)
     windows = set(user.windows)
     windows.symmetric_difference_update({window})
     db.update_windows(user.id, tuple(windows))

@@ -18,13 +18,15 @@ from topbot.models import Card, Offer
 
 class FakeScryfall:
     def __init__(self, multilingual: dict[str, list[Card]] | None = None, autocomplete: list[str] | None = None,
-                 fuzzy: dict[str, Card] | None = None):
+                 fuzzy: dict[str, Card] | None = None, localized: dict[str, str] | None = None):
         self.multilingual = multilingual or {}
         self.autocomplete_names = autocomplete or []
         self.fuzzy_cards = fuzzy or {}
+        self.localized = localized or {}
         self.multilingual_calls: list[str] = []
         self.autocomplete_calls = 0
         self.fuzzy_calls: list[str] = []
+        self.localized_calls: list[str] = []
 
     async def named_fuzzy(self, query: str) -> Card | None:
         self.fuzzy_calls.append(query)
@@ -37,6 +39,10 @@ class FakeScryfall:
     async def search_multilingual(self, query: str, limit: int = 5) -> list[Card]:
         self.multilingual_calls.append(query)
         return self.multilingual.get(query, [])[:limit]
+
+    async def localized_name(self, name_en: str) -> str | None:
+        self.localized_calls.append(name_en)
+        return self.localized.get(name_en)
 
     async def autocomplete(self, query: str) -> list[str]:
         self.autocomplete_calls += 1
@@ -351,6 +357,43 @@ class CommandTextTest(unittest.IsolatedAsyncioTestCase):
         for text in sent:
             mentioned = set(re.findall(r"/([a-z_]+)", text))
             self.assertTrue(mentioned <= known, f"unknown commands {mentioned - known} in {text!r}")
+
+
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram is not installed")
+class AddCardRussianNameTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        from topbot import bot as bot_module
+
+        self.bot = bot_module
+        self.db = Database(":memory:")
+        self.catalog = CardCatalog(self.db)
+        bot_module.ctx.db = self.db
+        bot_module.ctx.catalog = self.catalog
+        bot_module.ctx.topdeck = None
+
+    def tearDown(self) -> None:
+        self.bot.ctx.scryfall = None
+        self.bot.ctx.topdeck = None
+        self.db.close()
+
+    async def test_english_lookup_stores_russian_name(self):
+        self.bot.ctx.scryfall = FakeScryfall(
+            fuzzy={"ranger captain of eos": Card(name_en="Ranger-Captain of Eos")},
+            localized={"Ranger-Captain of Eos": "Капитан Лесничих Эоса"},
+        )
+        is_new, name = await self.bot._add_card(42, "ranger captain of eos")
+        self.assertTrue(is_new)
+        self.assertEqual(name, "Ranger-Captain of Eos")
+        row = self.db.conn.execute("SELECT name_ru FROM cards WHERE name_norm='ranger captain of eos'").fetchone()
+        self.assertEqual(row["name_ru"], "Капитан Лесничих Эоса")
+        self.assertEqual(self.bot.ctx.scryfall.localized_calls, ["Ranger-Captain of Eos"])
+
+    async def test_existing_russian_name_is_not_requested_again(self):
+        self.bot.ctx.scryfall = FakeScryfall(
+            fuzzy={"tarmogoyf": Card(name_en="Tarmogoyf", name_ru="Тармогойф")},
+        )
+        await self.bot._add_card(42, "tarmogoyf")
+        self.assertEqual(self.bot.ctx.scryfall.localized_calls, [])
 
 
 @unittest.skipUnless(HAS_AIOGRAM, "aiogram is not installed")

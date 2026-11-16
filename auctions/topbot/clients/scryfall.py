@@ -95,6 +95,10 @@ class ScryfallClient:
             return []
         return [self._to_card(item) for item in payload.get("data", [])[:limit]]
 
+    async def localized_name(self, name_en: str) -> str | None:
+        cards = await self.search_multilingual(f'!"{name_en}" lang:ru', limit=5)
+        return next((card.name_ru for card in cards if card.name_ru), None)
+
     async def collection(self, identifiers: list[dict]) -> list[Card]:
         if not identifiers:
             return []

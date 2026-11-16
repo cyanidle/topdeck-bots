@@ -67,6 +67,25 @@ class CardCatalog:
         names = await self.scryfall.card_names()
         return self.store_names(names)
 
+    async def fill_russian_names(self) -> int:
+        if self.scryfall is None:
+            return 0
+        rows = self.db.conn.execute(
+            "SELECT DISTINCT c.id, c.name_en FROM cards c JOIN watchlist w ON w.card_id = c.id"
+            " WHERE c.name_ru IS NULL OR c.name_ru = '' ORDER BY c.name_en"
+        ).fetchall()
+        filled = 0
+        for row in rows:
+            name_ru = await self.scryfall.localized_name(row["name_en"])
+            if not name_ru:
+                continue
+            self.db.conn.execute("UPDATE cards SET name_ru=? WHERE id=?", (name_ru, int(row["id"])))
+            self.add_local_card(row["name_en"], name_ru)
+            filled += 1
+        if filled:
+            self.db.invalidate_lot_matches()
+        return filled
+
     def search(self, query: str, limit: int = 8) -> list[str]:
         query_norm = normalize(query)
         if len(query_norm) < 2:

@@ -63,7 +63,8 @@ class Database:
         now = int(time.time())
         self.conn.execute(
             "INSERT INTO users(id, username, first_name, created_at, last_seen_at) VALUES(?,?,?,?,?) "
-            "ON CONFLICT(id) DO UPDATE SET username=excluded.username, last_seen_at=excluded.last_seen_at",
+            "ON CONFLICT(id) DO UPDATE SET username=COALESCE(excluded.username, users.username), "
+            "first_name=COALESCE(excluded.first_name, users.first_name), last_seen_at=excluded.last_seen_at",
             (user_id, username, first_name, now, now),
         )
         return self.get_user(user_id)

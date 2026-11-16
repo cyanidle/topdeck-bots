@@ -76,6 +76,19 @@ async def _catalog_sync(catalog: CardCatalog) -> None:
         logger.info("card name catalog: %s new names, total %s", added, catalog.count())
     except Exception:
         logger.exception("catalog refresh failed")
+    try:
+        filled = await catalog.fill_russian_names()
+        if filled:
+            logger.info("russian names filled", extra={"cards": filled})
+    except Exception:
+        logger.exception("russian names backfill failed")
+
+
+async def _alert(logger: logging.Logger, action, *args) -> None:
+    try:
+        await action(*args)
+    except Exception:
+        logger.exception("admin alert failed")
 
 
 async def _poll_loop(settings: Settings, poller: AuctionPoller, alerter: AdminAlerter) -> None:
@@ -85,9 +98,9 @@ async def _poll_loop(settings: Settings, poller: AuctionPoller, alerter: AdminAl
             stats = await poller.poll_once()
         except Exception as exc:
             logger.exception("auction poll failed")
-            await alerter.on_failure(repr(exc))
+            await _alert(logger, alerter.on_failure, repr(exc))
         else:
-            await alerter.on_success(stats)
+            await _alert(logger, alerter.on_success, stats)
         await asyncio.sleep(settings.poll_interval_s)
 
 

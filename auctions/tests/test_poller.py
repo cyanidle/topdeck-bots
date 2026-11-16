@@ -470,6 +470,17 @@ class AdminAlerterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.sent, [])
 
 
+class EnsureUserTest(unittest.TestCase):
+    def test_username_survives_ensure_user_without_it(self):
+        db = Database(":memory:")
+        db.ensure_user(42, "tester", "Tester")
+        db.ensure_user(42)
+        row = db.conn.execute("SELECT username, first_name FROM users WHERE id=42").fetchone()
+        self.assertEqual((row["username"], row["first_name"]), ("tester", "Tester"))
+        self.assertEqual(db.user_id_by_username("tester"), 42)
+        db.close()
+
+
 class MatchVersionTest(unittest.TestCase):
     def test_new_rules_invalidate_cached_matches(self):
         with tempfile.TemporaryDirectory() as tmp:

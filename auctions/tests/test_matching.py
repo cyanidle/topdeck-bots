@@ -99,6 +99,13 @@ class PrefixMatchTest(unittest.TestCase):
         matches = match_title("Тармогойф FUT #153 RU NM", CARDS)
         self.assertEqual([(match[0], match[2]) for match in matches], [(3, "prefix_ru")])
 
+    def test_russian_language_flag_tail(self):
+        cards = CARDS + [Card(id=9, name_en="Ranger-Captain of Eos", name_ru="Капитан Лесничих Эоса")]
+        matches = match_title("Капитан Лесничих Эоса РУС подпись", cards)
+        self.assertEqual([(match[0], match[2]) for match in matches], [(9, "prefix_ru")])
+        self.assertEqual([(m[0], m[2]) for m in match_title("Капитан Лесничих Эоса РУС", cards)],
+                         [(9, "exact_ru")])
+
     def test_composition_prefix(self):
         matches = match_names(["Delighted Halfling LTR #158"], [Card(id=8, name_en="Delighted Halfling")])
         self.assertEqual([(match[0], match[2]) for match in matches], [(8, "composition:prefix_en")])

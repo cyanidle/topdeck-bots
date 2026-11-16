@@ -63,6 +63,20 @@ class ScryfallClientTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call["proxy"], "http://127.0.0.1:1081")
         self.assertEqual(call["params"], {"fuzzy": "Tarmogoyf"})
 
+    async def test_localized_name_requests_russian_printing(self):
+        session = FakeSession([FakeResponse(200, {"data": [CARD]})])
+        client = ScryfallClient(session, min_interval_s=0)
+        self.assertEqual(await client.localized_name("Tarmogoyf"), "Тармогойф")
+        self.assertEqual(session.calls[0]["params"], {
+            "q": '!"Tarmogoyf" lang:ru', "unique": "cards", "include_multilingual": "true", "order": "name",
+        })
+
+    async def test_localized_name_returns_none_without_printed_name(self):
+        english_only = {key: value for key, value in CARD.items() if key != "printed_name"}
+        session = FakeSession([FakeResponse(200, {"data": [english_only]})])
+        client = ScryfallClient(session, min_interval_s=0)
+        self.assertIsNone(await client.localized_name("Tarmogoyf"))
+
     async def test_404_returns_none(self):
         session = FakeSession([FakeResponse(404)])
         client = ScryfallClient(session, min_interval_s=0)

@@ -21,7 +21,7 @@ MATCH_VERSION = 2
 FLAG_WORDS = {
     "foil", "фойл", "etched", "borderless", "extended", "art", "surge", "promo", "showcase", "retro",
     "ру", "ru", "en", "eng", "jp", "fra", "it", "sp", "nm", "hp", "mp", "pl", "gd", "lp", "mint",
-    "near", "played", "ex", "vg",
+    "near", "played", "ex", "vg", "рус", "rus", "russian",
 }
 
 
