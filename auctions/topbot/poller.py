@@ -12,8 +12,10 @@ from .models import PollStats
 log = logging.getLogger(__name__)
 
 COMPOSITION_BUDGET = 40
+TRUNCATED_POLL_RATIO = 0.5
 FAILURE_ALERT_THRESHOLD = 3
 EMPTY_ALERT_THRESHOLD = 2
+TRUNCATED_ALERT_THRESHOLD = 2
 ADMIN_ALERT_COOLDOWN_S = 3600
 
 
@@ -37,9 +39,15 @@ class AuctionPoller:
         now = int(self.clock())
         log.info("auction poll received", extra={"lots": len(lots)})
         stats = PollStats(lots=len(lots))
+        active_before = self.db.active_lots_count()
         for lot in lots:
             self.db.upsert_lot(lot, now)
-        stats.vanished = self.db.mark_vanished([lot.id for lot in lots], now)
+        if _poll_is_complete(len(lots), active_before):
+            stats.vanished = self.db.mark_vanished([lot.id for lot in lots])
+        else:
+            stats.truncated = True
+            log.warning("auction poll looks truncated, vanished lots kept",
+                        extra={"lots": len(lots), "active": active_before})
 
         subscribers = self.db.subscribers_by_card()
         if not subscribers:
@@ -95,18 +103,21 @@ class AuctionPoller:
 class AdminAlerter:
     def __init__(self, db: Database, sender, admin_ids: tuple[int, ...] = (),
                  admin_usernames: tuple[str, ...] = (), threshold: int = FAILURE_ALERT_THRESHOLD,
-                 empty_threshold: int = EMPTY_ALERT_THRESHOLD, cooldown_s: int = ADMIN_ALERT_COOLDOWN_S,
-                 clock=time.time):
+                 empty_threshold: int = EMPTY_ALERT_THRESHOLD,
+                 truncated_threshold: int = TRUNCATED_ALERT_THRESHOLD,
+                 cooldown_s: int = ADMIN_ALERT_COOLDOWN_S, clock=time.time):
         self.db = db
         self.sender = sender
         self.admin_ids = admin_ids
         self.admin_usernames = admin_usernames
         self.threshold = threshold
         self.empty_threshold = empty_threshold
+        self.truncated_threshold = truncated_threshold
         self.cooldown_s = cooldown_s
         self.clock = clock
         self.failures = 0
         self.empty_streak = 0
+        self.truncated_streak = 0
         self.alerted = False
         self.alerted_at: dict[str, int] = {}
 
@@ -155,6 +166,14 @@ class AdminAlerter:
         if self.empty_streak == self.empty_threshold and self._cooldown_passed("empty"):
             await self._send("topbot: два опроса подряд вернули 0 лотов — похоже, сайт изменил вёрстку "
                              "или недоступен.")
+        self.truncated_streak = self.truncated_streak + 1 if stats.truncated else 0
+        if self.truncated_streak == self.truncated_threshold and self._cooldown_passed("truncated"):
+            await self._send("topbot: два опроса подряд вернули меньше половины лотов — выкупленные и снятые "
+                             "лоты не закрываются, /list может показывать завершённые аукционы.")
+
+
+def _poll_is_complete(seen: int, active_before: int) -> bool:
+    return seen > 0 and seen >= active_before * TRUNCATED_POLL_RATIO
 
 
 def _merge(*groups: list[tuple[int, float, str]]) -> list[tuple[int, float, str]]:

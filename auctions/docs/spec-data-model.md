@@ -61,7 +61,7 @@ CREATE TABLE lots (
     shipping_quick  TEXT,
     image_url       TEXT,
     composition_ts  INTEGER,                        -- когда скачали состав лота (NULL = ещё нет)
-    state           TEXT NOT NULL DEFAULT 'active', -- active | finished | vanished
+    state           TEXT NOT NULL DEFAULT 'active', -- active (есть в последнем опросе) | finished
     final_price     INTEGER,
     winner_name     TEXT,
     first_seen      INTEGER NOT NULL,

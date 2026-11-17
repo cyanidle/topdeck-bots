@@ -124,6 +124,42 @@ class PollerTest(unittest.IsolatedAsyncioTestCase):
         row = self.db.conn.execute("SELECT state FROM lots WHERE id=5").fetchone()
         self.assertEqual(row["state"], "finished")
 
+    async def test_lot_gone_before_its_deadline_leaves_the_list(self):
+        end_ts = int(time.time()) + 3600
+        poller = AuctionPoller(self.db, FakeClient([lot(30, "Bayou (3ED, №283)", end_ts)]), clock=time.time)
+        await poller.poll_once()
+        card = self.db.watchlist_overview(42)[0]
+        self.assertEqual((card.lots_count, card.next_lot_id), (1, 30))
+        poller.client.lots = [lot(31, "Other (XYZ)", end_ts)]
+        await poller.poll_once()
+        card = self.db.watchlist_overview(42)[0]
+        self.assertEqual((card.lots_count, card.next_lot_id, card.next_end_ts), (0, None, None))
+
+    async def test_empty_poll_keeps_lots(self):
+        poller = self.poller([lot(40, "Bayou (3ED, №283)", NOW + 3600)])
+        await poller.poll_once()
+        poller.client.lots = []
+        self.assertEqual((await poller.poll_once()).vanished, 0)
+        self.assertEqual(self._states(), {40: "active"})
+
+    async def test_truncated_poll_keeps_lots(self):
+        lots = [lot(50 + index, f"Bayou (3ED, №283) {index}", NOW + 3600) for index in range(4)]
+        poller = self.poller(lots)
+        await poller.poll_once()
+        poller.client.lots = [lots[0]]
+        stats = await poller.poll_once()
+        self.assertEqual(stats.vanished, 0)
+        self.assertTrue(stats.truncated)
+        self.assertEqual(self._states(), {50: "active", 51: "active", 52: "active", 53: "active"})
+        poller.client.lots = [lots[0], lots[1]]
+        stats = await poller.poll_once()
+        self.assertEqual((stats.vanished, stats.truncated), (2, False))
+        self.assertEqual(self._states(), {50: "active", 51: "active", 52: "finished", 53: "finished"})
+
+    def _states(self) -> dict[int, str]:
+        rows = self.db.conn.execute("SELECT id, state FROM lots ORDER BY id").fetchall()
+        return {int(row["id"]): row["state"] for row in rows}
+
     async def test_poll_run_is_recorded(self):
         await self.poller([lot(7, "Bayou (3ED, №283)", NOW + 600)]).poll_once()
         last = self.db.last_poll("auctions")
@@ -419,6 +455,22 @@ class AdminAlerterTest(unittest.IsolatedAsyncioTestCase):
         await self.alerter.on_success(PollStats(lots=0))
         await self.alerter.on_success(PollStats(lots=400))
         await self.alerter.on_success(PollStats(lots=0))
+        self.assertEqual(self.sent, [])
+
+    async def test_two_truncated_polls_alert_once(self):
+        await self.alerter.on_success(PollStats(lots=400))
+        await self.alerter.on_success(PollStats(lots=200, truncated=True))
+        self.assertEqual(self.sent, [])
+        await self.alerter.on_success(PollStats(lots=200, truncated=True))
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("меньше половины лотов", self.sent[0][1])
+        await self.alerter.on_success(PollStats(lots=200, truncated=True))
+        self.assertEqual(len(self.sent), 1)
+
+    async def test_complete_poll_resets_truncated_streak(self):
+        await self.alerter.on_success(PollStats(lots=200, truncated=True))
+        await self.alerter.on_success(PollStats(lots=400))
+        await self.alerter.on_success(PollStats(lots=200, truncated=True))
         self.assertEqual(self.sent, [])
 
     async def test_unknown_admin_username_is_skipped(self):

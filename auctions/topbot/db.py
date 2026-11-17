@@ -191,7 +191,7 @@ class Database:
         return Counts(
             users=self._count("SELECT COUNT(*) AS n FROM users"),
             cards=self._count("SELECT COUNT(*) AS n FROM cards"),
-            lots_active=self._count("SELECT COUNT(*) AS n FROM lots WHERE state='active'"),
+            lots_active=self.active_lots_count(),
             notifications_sent=self._count("SELECT COUNT(*) AS n FROM notifications WHERE state='sent'"),
             card_names=self._count("SELECT COUNT(*) AS n FROM card_names"),
         )
@@ -249,13 +249,21 @@ class Database:
             ),
         )
 
-    def mark_vanished(self, seen_ids: Sequence[int], now: int) -> int:
+    def active_lots_count(self) -> int:
+        return self._count("SELECT COUNT(*) AS n FROM lots WHERE state='active'")
+
+    def mark_vanished(self, seen_ids: Sequence[int]) -> int:
+        """Лоты, которых нет в ответе, больше не торгуются: сайт отдаёт только идущие аукционы.
+
+        Дедлайн не проверяется — выкуп по BIN и снятые продавцом лоты исчезают из выдачи
+        с ещё не наступившим `end_ts`.
+        """
         if not seen_ids:
             return 0
         placeholders = ",".join("?" for _ in seen_ids)
         cur = self.conn.execute(
-            f"UPDATE lots SET state='finished' WHERE state='active' AND end_ts<=? AND id NOT IN ({placeholders})",
-            (now, *seen_ids),
+            f"UPDATE lots SET state='finished' WHERE state='active' AND id NOT IN ({placeholders})",
+            tuple(seen_ids),
         )
         return cur.rowcount
 
