@@ -41,7 +41,7 @@ class Settings:
     web_port: int = 8080
     db_path: str = "./data/topbot.sqlite3"
     user_agent: str = "topbot/0.1 (+contact)"
-    poll_interval_s: int = 840
+    poll_interval_s: int = 60
     prices_interval_s: int = 900
     windows: tuple[int, ...] = DEFAULT_WINDOWS
     throttle_s: float = 1.5

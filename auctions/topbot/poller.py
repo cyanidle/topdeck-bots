@@ -12,11 +12,14 @@ from .models import PollStats
 
 log = logging.getLogger(__name__)
 
-COMPOSITION_BUDGET = 40
-TRUNCATED_POLL_RATIO = 0.5
+COMPOSITION_BUDGET = 20
+COMPOSITION_INTERVAL_S = 600
+TRUNCATED_POLL_RATIO = 0.9
 COMPOSITION_CLEAN_KEY = "composition_clean_version"
-FAILURE_ALERT_THRESHOLD = 3
-EMPTY_ALERT_THRESHOLD = 2
+POLL_RUNS_TTL_S = 7 * 86400
+POLL_RUNS_PRUNE_S = 86400
+FAILURE_ALERT_THRESHOLD = 5
+EMPTY_ALERT_THRESHOLD = 3
 TRUNCATED_ALERT_THRESHOLD = 2
 ADMIN_ALERT_COOLDOWN_S = 3600
 
@@ -27,6 +30,8 @@ class AuctionPoller:
         self.client = client
         self.clock = clock
         self._name_index: frozenset[str] | None = None
+        self._compositions_at = 0
+        self._pruned_at = 0
 
     async def poll_once(self) -> PollStats:
         started_at = int(self.clock())
@@ -46,12 +51,14 @@ class AuctionPoller:
         active_before = self.db.active_lots_count()
         for lot in lots:
             self.db.upsert_lot(lot, now)
+        stats.vanished = self.db.mark_overdue(now)
         if _poll_is_complete(len(lots), active_before):
-            stats.vanished = self.db.mark_vanished([lot.id for lot in lots])
-        else:
+            stats.vanished += self.db.mark_vanished([lot.id for lot in lots])
+        elif lots:
             stats.truncated = True
             log.warning("auction poll looks truncated, vanished lots kept",
                         extra={"lots": len(lots), "active": active_before})
+        self._prune_poll_runs(now)
 
         subscribers = self.db.subscribers_by_card()
         if not subscribers:
@@ -60,8 +67,11 @@ class AuctionPoller:
             return stats
 
         ensure_matches(self.db)
-        stats.compositions = await self._refresh_compositions(now)
-        ensure_matches(self.db)
+        if now - self._compositions_at >= COMPOSITION_INTERVAL_S:
+            self._compositions_at = now
+            stats.compositions = await self._refresh_compositions(now)
+            if stats.compositions:
+                ensure_matches(self.db)
         for lot in lots:
             card_ids = self.db.lot_card_ids(lot.id)
             if card_ids:
@@ -79,8 +89,17 @@ class AuctionPoller:
         log.info("auction poll done", extra={"lots": stats.lots, "matched_lots": stats.matched_lots,
                                              "watched_lots": stats.watched_lots,
                                              "vanished": stats.vanished,
-                                             "compositions": stats.compositions, "ms": duration_ms})
+                                             "compositions": stats.compositions,
+                                             "requests": 1 + stats.compositions, "ms": duration_ms})
         return stats
+
+    def _prune_poll_runs(self, now: int) -> None:
+        if now - self._pruned_at < POLL_RUNS_PRUNE_S:
+            return
+        self._pruned_at = now
+        pruned = self.db.prune_poll_runs(now - POLL_RUNS_TTL_S)
+        if pruned:
+            log.info("poll runs pruned", extra={"rows": pruned})
 
     def _card_names(self) -> frozenset[str]:
         if self._name_index is None:

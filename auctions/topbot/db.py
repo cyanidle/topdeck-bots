@@ -15,6 +15,7 @@ from .models import Card, Counts, Lot, Offer, PollRun, User, WatchlistCard, Watc
 
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "schema.sql")
 SETS_SYNCED_KEY = "sets_synced_at"
+FINISH_CHUNK = 500
 
 log = logging.getLogger(__name__)
 
@@ -268,6 +269,10 @@ class Database:
     def active_lots_count(self) -> int:
         return self._count("SELECT COUNT(*) AS n FROM lots WHERE state='active'")
 
+    def mark_overdue(self, now: int) -> int:
+        cur = self.conn.execute("UPDATE lots SET state='finished' WHERE state='active' AND end_ts <= ?", (now,))
+        return cur.rowcount
+
     def mark_vanished(self, seen_ids: Sequence[int]) -> int:
         """Лоты, которых нет в ответе, больше не торгуются: сайт отдаёт только идущие аукционы.
 
@@ -276,12 +281,21 @@ class Database:
         """
         if not seen_ids:
             return 0
-        placeholders = ",".join("?" for _ in seen_ids)
-        cur = self.conn.execute(
-            f"UPDATE lots SET state='finished' WHERE state='active' AND id NOT IN ({placeholders})",
-            tuple(seen_ids),
-        )
-        return cur.rowcount
+        seen = set(seen_ids)
+        absent = [int(row["id"]) for row in self.conn.execute("SELECT id FROM lots WHERE state='active'")]
+        return self._finish_lots([lot_id for lot_id in absent if lot_id not in seen])
+
+    def _finish_lots(self, lot_ids: Sequence[int]) -> int:
+        finished = 0
+        for start in range(0, len(lot_ids), FINISH_CHUNK):
+            chunk = lot_ids[start:start + FINISH_CHUNK]
+            placeholders = ",".join("?" for _ in chunk)
+            cur = self.conn.execute(
+                f"UPDATE lots SET state='finished' WHERE state='active' AND id IN ({placeholders})",
+                tuple(chunk),
+            )
+            finished += cur.rowcount
+        return finished
 
     def invalidate_lot_matches(self) -> int:
         cur = self.conn.execute("UPDATE lots SET matched_hash=NULL WHERE matched_hash IS NOT NULL")
@@ -424,6 +438,10 @@ class Database:
             "INSERT INTO poll_runs(kind, started_at, duration_ms, ok, items, error) VALUES(?,?,?,?,?,?)",
             (kind, started_at, duration_ms, int(ok), items, error),
         )
+
+    def prune_poll_runs(self, before_ts: int) -> int:
+        cur = self.conn.execute("DELETE FROM poll_runs WHERE started_at < ?", (before_ts,))
+        return cur.rowcount
 
     def last_poll(self, kind: str) -> PollRun | None:
         row = self.conn.execute(

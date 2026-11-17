@@ -10,7 +10,8 @@ import unittest
 from topbot.db import Database, title_hash
 from topbot.matching import MATCH_VERSION
 from topbot.models import Lot, LotDetail, PollStats
-from topbot.poller import ADMIN_ALERT_COOLDOWN_S, AdminAlerter, AuctionPoller, ensure_matches
+from topbot.poller import (ADMIN_ALERT_COOLDOWN_S, EMPTY_ALERT_THRESHOLD, FAILURE_ALERT_THRESHOLD,
+                           AdminAlerter, AuctionPoller, ensure_matches)
 
 NOW = 1_795_400_000
 
@@ -116,13 +117,19 @@ class PollerTest(unittest.IsolatedAsyncioTestCase):
         await self.poller(lots).poll_once()
         self.assertEqual(matched_cards(self.db, 4), [2])
 
-    async def test_vanished_lot_is_marked_finished(self):
+    async def test_expired_lot_is_finished_even_when_still_listed(self):
         await self.poller([lot(5, "Bayou (3ED, №283)", NOW - 60)]).poll_once()
-        row = self.db.conn.execute("SELECT state FROM lots WHERE id=5").fetchone()
-        self.assertEqual(row["state"], "active")
-        await self.poller([lot(6, "Other (XYZ)", NOW + 100)]).poll_once()
-        row = self.db.conn.execute("SELECT state FROM lots WHERE id=5").fetchone()
-        self.assertEqual(row["state"], "finished")
+        self.assertEqual(self._states()[5], "finished")
+
+    async def test_vanished_lot_is_marked_finished(self):
+        lots = [lot(60 + index, f"Bayou (3ED, №283) {index}", NOW + 3600) for index in range(10)]
+        poller = self.poller(lots)
+        await poller.poll_once()
+        self.assertEqual(self._states()[60], "active")
+        poller.client.lots = lots[1:]
+        stats = await poller.poll_once()
+        self.assertEqual((stats.vanished, stats.truncated), (1, False))
+        self.assertEqual(self._states()[60], "finished")
 
     async def test_lot_gone_before_its_deadline_leaves_the_list(self):
         end_ts = int(time.time()) + 3600
@@ -139,22 +146,34 @@ class PollerTest(unittest.IsolatedAsyncioTestCase):
         poller = self.poller([lot(40, "Bayou (3ED, №283)", NOW + 3600)])
         await poller.poll_once()
         poller.client.lots = []
-        self.assertEqual((await poller.poll_once()).vanished, 0)
+        stats = await poller.poll_once()
+        self.assertEqual((stats.vanished, stats.truncated), (0, False))
         self.assertEqual(self._states(), {40: "active"})
 
     async def test_truncated_poll_keeps_lots(self):
-        lots = [lot(50 + index, f"Bayou (3ED, №283) {index}", NOW + 3600) for index in range(4)]
+        lots = [lot(50 + index, f"Bayou (3ED, №283) {index}", NOW + 3600) for index in range(10)]
         poller = self.poller(lots)
         await poller.poll_once()
-        poller.client.lots = [lots[0]]
+        poller.client.lots = lots[:5]
         stats = await poller.poll_once()
         self.assertEqual(stats.vanished, 0)
         self.assertTrue(stats.truncated)
-        self.assertEqual(self._states(), {50: "active", 51: "active", 52: "active", 53: "active"})
-        poller.client.lots = [lots[0], lots[1]]
+        self.assertEqual(set(self._states().values()), {"active"})
+        poller.client.lots = lots[1:]
         stats = await poller.poll_once()
-        self.assertEqual((stats.vanished, stats.truncated), (2, False))
-        self.assertEqual(self._states(), {50: "active", 51: "active", 52: "finished", 53: "finished"})
+        self.assertEqual((stats.vanished, stats.truncated), (1, False))
+        self.assertEqual(self._states()[50], "finished")
+
+    async def test_overdue_lots_close_even_in_a_truncated_poll(self):
+        lots = [lot(70 + index, f"Bayou (3ED, №283) {index}", NOW + 3600) for index in range(10)]
+        lots.append(lot(80, "Bayou (3ED, №283) old", NOW - 60))
+        poller = self.poller(lots)
+        await poller.poll_once()
+        poller.client.lots = [lot(90, "Other (XYZ)", NOW + 3600)]
+        stats = await poller.poll_once()
+        self.assertTrue(stats.truncated)
+        self.assertEqual(self._states()[80], "finished")
+        self.assertEqual(self._states()[70], "active")
 
     def _states(self) -> dict[int, str]:
         rows = self.db.conn.execute("SELECT id, state FROM lots ORDER BY id").fetchall()
@@ -438,17 +457,17 @@ class AdminAlerterTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self.db.close()
 
-    async def test_third_failure_alerts_admin_resolved_by_username(self):
-        await self.alerter.on_failure("boom")
-        await self.alerter.on_failure("boom")
+    async def test_failure_streak_alerts_admin_resolved_by_username(self):
+        for _ in range(FAILURE_ALERT_THRESHOLD - 1):
+            await self.alerter.on_failure("boom")
         self.assertEqual(self.sent, [])
         await self.alerter.on_failure("boom")
         self.assertEqual([user_id for user_id, _ in self.sent], [7])
-        self.assertIn("3 опроса", self.sent[0][1])
+        self.assertIn(f"{FAILURE_ALERT_THRESHOLD} опроса", self.sent[0][1])
         self.assertIn("boom", self.sent[0][1])
 
     async def test_recovery_is_reported_once(self):
-        for _ in range(3):
+        for _ in range(FAILURE_ALERT_THRESHOLD):
             await self.alerter.on_failure("boom")
         await self.alerter.on_success(PollStats(lots=400))
         await self.alerter.on_success(PollStats(lots=400))
@@ -456,17 +475,18 @@ class AdminAlerterTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("восстановился", self.sent[1][1])
 
     async def test_cooldown_suppresses_repeated_failure_alerts(self):
-        for _ in range(6):
+        for _ in range(2 * FAILURE_ALERT_THRESHOLD):
             await self.alerter.on_failure("boom")
         self.assertEqual(len(self.sent), 1)
         self.clock[0] += ADMIN_ALERT_COOLDOWN_S
-        for _ in range(3):
+        for _ in range(FAILURE_ALERT_THRESHOLD):
             await self.alerter.on_failure("boom")
         self.assertEqual(len(self.sent), 2)
 
-    async def test_two_empty_polls_alert_once(self):
+    async def test_empty_streak_alerts_once(self):
         await self.alerter.on_success(PollStats(lots=400))
-        await self.alerter.on_success(PollStats(lots=0))
+        for _ in range(EMPTY_ALERT_THRESHOLD - 1):
+            await self.alerter.on_success(PollStats(lots=0))
         self.assertEqual(self.sent, [])
         await self.alerter.on_success(PollStats(lots=0))
         self.assertEqual(len(self.sent), 1)

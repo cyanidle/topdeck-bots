@@ -206,7 +206,7 @@ WEB_PORT=8080
 DB_PATH=./data/topbot.sqlite3
 ADMIN_TG_IDS=...
 USER_AGENT="topbot/0.1 (+contact)"   # кавычки обязательны: файл читается и как shell-source
-POLL_INTERVAL_S=840
+POLL_INTERVAL_S=60
 ```
 
 Правила: подписка и токен бота — только в `.env` (600); в логах маскируются; `git grep` перед коммитом; при утечке — перевыпуск токена у @BotFather и смена подписки.
