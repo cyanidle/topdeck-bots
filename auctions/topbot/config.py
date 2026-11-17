@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-DEFAULT_WINDOWS = (86400, 10800, 3600, 900)
+DEFAULT_WINDOWS = (86400, 3600, 900, 300)
+RETIRED_WINDOWS = {10800: 300}
 
 
 def load_env_file(path: str) -> dict[str, str]:

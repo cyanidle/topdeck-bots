@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS users (
     first_name     TEXT,
     tz             TEXT NOT NULL DEFAULT 'Europe/Moscow',
     lang           TEXT NOT NULL DEFAULT 'ru',
-    windows_json   TEXT NOT NULL DEFAULT '[86400,10800,3600,900]',
+    windows_json   TEXT NOT NULL DEFAULT '[86400,3600,900,300]',
     new_lot_alerts INTEGER NOT NULL DEFAULT 0,
     muted_until    INTEGER,
     created_at     INTEGER NOT NULL,

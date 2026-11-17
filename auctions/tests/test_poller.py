@@ -265,9 +265,32 @@ class LegacyUsersMigrationTest(unittest.TestCase):
                 self.assertNotIn("quiet_to", columns)
                 user = db.get_user(7)
                 self.assertEqual(user.id, 7)
-                self.assertEqual(user.windows, (86400, 10800, 3600, 900))
+                self.assertEqual(user.windows, (86400, 3600, 900, 300))
             finally:
                 db.close()
+
+
+class WindowRetirementTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.db = Database(":memory:")
+
+    def tearDown(self) -> None:
+        self.db.close()
+
+    def _windows(self, user_id: int) -> tuple[int, ...]:
+        return self.db.get_user(user_id).windows
+
+    def test_three_hour_window_becomes_five_minutes(self):
+        self.db.ensure_user(1)
+        self.db.update_windows(1, (86400, 10800, 3600, 900))
+        self.db._migrate_windows()
+        self.assertEqual(self._windows(1), (86400, 3600, 900, 300))
+
+    def test_disabled_three_hour_window_is_not_replaced(self):
+        self.db.ensure_user(2)
+        self.db.update_windows(2, (86400, 3600))
+        self.db._migrate_windows()
+        self.assertEqual(self._windows(2), (86400, 3600))
 
 
 class CompositionStorageTest(unittest.TestCase):

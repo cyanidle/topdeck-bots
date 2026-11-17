@@ -8,6 +8,7 @@ import sqlite3
 import time
 from typing import Iterable, Sequence
 
+from .config import RETIRED_WINDOWS
 from .matching import MATCH_VERSION, normalize
 from .models import Card, Counts, Lot, Offer, PollRun, User, WatchlistCard, WatchlistItem
 
@@ -57,6 +58,16 @@ class Database:
                 self.conn.execute(f"ALTER TABLE users DROP COLUMN {column}")
         self.conn.execute("DROP TABLE IF EXISTS offers_snapshot")
         self.conn.execute("DROP TABLE IF EXISTS card_price_stats")
+        self._migrate_windows()
+
+    def _migrate_windows(self) -> None:
+        for row in self.conn.execute("SELECT id, windows_json FROM users").fetchall():
+            windows = json.loads(row["windows_json"])
+            if not RETIRED_WINDOWS.keys() & set(windows):
+                continue
+            migrated = {RETIRED_WINDOWS.get(int(window), int(window)) for window in windows}
+            self.conn.execute("UPDATE users SET windows_json=? WHERE id=?",
+                              (json.dumps(sorted(migrated, reverse=True)), row["id"]))
 
     def _sync_match_version(self) -> None:
         row = self.conn.execute("SELECT value FROM meta WHERE key='match_version'").fetchone()

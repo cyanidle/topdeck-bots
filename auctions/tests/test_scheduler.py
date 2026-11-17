@@ -6,10 +6,11 @@ from topbot.db import Database, title_hash
 from topbot.models import Lot, Offer, PollStats
 from topbot.notifier import Notifier
 from topbot.poller import AuctionPoller
+from topbot.config import DEFAULT_WINDOWS
 from topbot.scheduler import TICK_S, WindowScheduler
 
 NOW = 1_795_400_000
-WINDOWS = (86400, 10800, 3600, 900)
+WINDOWS = DEFAULT_WINDOWS
 
 
 def make_lot(lot_id: int, title: str, end_ts: int, current_bid: int = 500, bid_count: int = 3) -> Lot:

@@ -10,7 +10,7 @@ CREATE TABLE users (
     first_name      TEXT,
     tz              TEXT NOT NULL DEFAULT 'Europe/Moscow',
     lang            TEXT NOT NULL DEFAULT 'ru',
-    windows_json    TEXT NOT NULL DEFAULT '[86400,10800,3600,900]',
+    windows_json    TEXT NOT NULL DEFAULT '[86400,3600,900,300]',
     new_lot_alerts  INTEGER NOT NULL DEFAULT 0,
     muted_until     INTEGER,                        -- epoch
     created_at      INTEGER NOT NULL,
@@ -90,7 +90,7 @@ CREATE TABLE notifications (
     user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     kind            TEXT NOT NULL,                  -- auction_window
     ref_id          INTEGER NOT NULL,               -- lot id | card id
-    window_s        INTEGER,                        -- 86400|10800|3600|900|NULL
+    window_s        INTEGER,                        -- 86400|3600|900|300|NULL (10800 упразднено)
     state           TEXT NOT NULL,                  -- pending | sent | skipped | failed
     created_at      INTEGER NOT NULL,
     sent_at         INTEGER,

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import unittest
 
+from topbot.config import DEFAULT_WINDOWS
 from topbot.windows import due_window, humanize_remaining
 
-WINDOWS = (86400, 10800, 3600, 900)
+WINDOWS = DEFAULT_WINDOWS
 
 
 class DueWindowTest(unittest.TestCase):
@@ -26,23 +27,30 @@ class DueWindowTest(unittest.TestCase):
         self.assertEqual(due_window(13 * 3600, WINDOWS, set()), 86400)
 
     def test_broader_window_is_not_sent_after_narrower(self):
-        self.assertIsNone(due_window(10800, WINDOWS, {10800}))
+        self.assertIsNone(due_window(3600, WINDOWS, {3600}))
         self.assertIsNone(due_window(800, WINDOWS, {900}))
 
     def test_narrower_window_still_fires_after_broader(self):
         self.assertEqual(due_window(3000, WINDOWS, {86400}), 3600)
-        self.assertEqual(due_window(600, WINDOWS, {86400, 10800, 3600}), 900)
+        self.assertEqual(due_window(600, WINDOWS, {86400, 3600}), 900)
+        self.assertEqual(due_window(300, WINDOWS, {86400, 3600, 900}), 300)
 
     def test_all_windows_sent(self):
-        self.assertIsNone(due_window(600, WINDOWS, {86400, 10800, 3600, 900}))
+        self.assertIsNone(due_window(600, WINDOWS, {86400, 3600, 900}))
+        self.assertIsNone(due_window(200, WINDOWS, set(WINDOWS)))
 
     def test_finished_or_past(self):
         self.assertIsNone(due_window(0, WINDOWS, set()))
         self.assertIsNone(due_window(-42, WINDOWS, set()))
 
     def test_urgent_window_fires_only_inside_its_range(self):
-        self.assertIsNone(due_window(901, WINDOWS, {86400, 10800, 3600}))
-        self.assertEqual(due_window(899, WINDOWS, {86400, 10800, 3600}), 900)
+        self.assertIsNone(due_window(901, WINDOWS, {86400, 3600}))
+        self.assertEqual(due_window(899, WINDOWS, {86400, 3600}), 900)
+
+    def test_five_minute_window_fires_only_inside_its_range(self):
+        self.assertIsNone(due_window(301, WINDOWS, {86400, 3600, 900}))
+        self.assertEqual(due_window(299, WINDOWS, {86400, 3600, 900}), 300)
+        self.assertIsNone(due_window(149, WINDOWS, {86400, 3600, 900}))
 
 
 class HumanizeTest(unittest.TestCase):
