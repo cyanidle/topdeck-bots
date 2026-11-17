@@ -51,6 +51,16 @@ class CleanCompositionTest(unittest.TestCase):
         names = ("Bayou", "bayou", "https:", "Состояние NM/EX")
         self.assertEqual(clean_composition(names, "Земли", SETS), ("Bayou",))
 
+    def test_set_name_that_is_not_a_card_is_dropped(self):
+        sets = SetIndex(names=frozenset({"visions", "time spiral"}))
+        cards = frozenset({"time spiral"})
+        self.assertEqual(clean_composition(("Visions", "Time Spiral", "Bayou"), "Земли", sets, cards),
+                         ("Time Spiral", "Bayou"))
+
+    def test_set_name_rule_is_skipped_without_a_card_catalog(self):
+        sets = SetIndex(names=frozenset({"visions"}))
+        self.assertEqual(clean_composition(("Visions",), "Земли", sets), ("Visions",))
+
 
 class StoredCompositionCleanupTest(unittest.TestCase):
     def setUp(self) -> None:

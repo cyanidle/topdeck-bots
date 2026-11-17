@@ -218,6 +218,9 @@ class Database:
             for row in self.conn.execute("SELECT id, name_en, name_ru FROM cards")
         ]
 
+    def card_name_index(self) -> frozenset[str]:
+        return frozenset(row["name_norm"] for row in self.conn.execute("SELECT name_norm FROM card_names"))
+
     def subscribers_by_card(self) -> dict[int, list[int]]:
         result: dict[int, list[int]] = {}
         for row in self.conn.execute("SELECT card_id, user_id FROM watchlist"):
@@ -303,7 +306,7 @@ class Database:
         )
         self.conn.execute("UPDATE lots SET composition_ts=?, matched_hash=NULL WHERE id=?", (now, lot_id))
 
-    def clean_compositions(self, sets: SetIndex) -> int:
+    def clean_compositions(self, sets: SetIndex, card_names: frozenset[str] = frozenset()) -> int:
         rows = self.conn.execute(
             "SELECT i.lot_id, i.name, l.title FROM lot_items i JOIN lots l ON l.id = i.lot_id"
         ).fetchall()
@@ -313,7 +316,7 @@ class Database:
             names.setdefault(int(row["lot_id"]), []).append(row["name"])
         changed = 0
         for lot_id, items in names.items():
-            kept = clean_composition(items, titles[lot_id], sets)
+            kept = clean_composition(items, titles[lot_id], sets, card_names)
             if kept == tuple(items):
                 continue
             changed += 1

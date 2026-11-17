@@ -72,8 +72,9 @@ def metadata_names(title: str, sets: SetIndex) -> frozenset[str]:
     return frozenset(names)
 
 
-def clean_composition(names: Iterable[str], title: str, sets: SetIndex) -> tuple[str, ...]:
-    """Убирает мусор и названия изданий из скобок заголовка — там бывает омоним карты (Urza's Saga)."""
+def clean_composition(names: Iterable[str], title: str, sets: SetIndex,
+                      card_names: frozenset[str] = frozenset()) -> tuple[str, ...]:
+    """Убирает мусор и названия изданий — в описании лота ссылкой бывает имя сета, а не карта."""
     metadata = metadata_names(title, sets)
     kept: list[str] = []
     seen: set[str] = set()
@@ -82,6 +83,8 @@ def clean_composition(names: Iterable[str], title: str, sets: SetIndex) -> tuple
         if not norm or norm in seen or is_junk(name):
             continue
         if norm in metadata and sets.knows(name):
+            continue
+        if card_names and sets.knows(name) and norm not in card_names:
             continue
         seen.add(norm)
         kept.append(name)

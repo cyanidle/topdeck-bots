@@ -26,6 +26,7 @@ class AuctionPoller:
         self.db = db
         self.client = client
         self.clock = clock
+        self._name_index: frozenset[str] | None = None
 
     async def poll_once(self) -> PollStats:
         started_at = int(self.clock())
@@ -81,13 +82,20 @@ class AuctionPoller:
                                              "compositions": stats.compositions, "ms": duration_ms})
         return stats
 
+    def _card_names(self) -> frozenset[str]:
+        if self._name_index is None:
+            names = self.db.card_name_index()
+            if names:
+                self._name_index = names
+        return self._name_index or frozenset()
+
     def _clean_stored_compositions(self) -> None:
         if self.db.meta_int(COMPOSITION_CLEAN_KEY) >= CLEAN_VERSION:
             return
         sets = self.db.set_index()
         if not sets.names:
             return
-        cleaned = self.db.clean_compositions(sets)
+        cleaned = self.db.clean_compositions(sets, self._card_names())
         self.db.set_meta(COMPOSITION_CLEAN_KEY, str(CLEAN_VERSION))
         log.info("stored compositions cleaned", extra={"lots": cleaned})
 
@@ -108,7 +116,8 @@ class AuctionPoller:
             except (TimeoutError, OSError, ClientError):
                 log.warning("lot composition fetch failed", extra={"lot_id": lot_id}, exc_info=True)
                 continue
-            self.db.save_composition(lot_id, clean_composition(detail.composition, title, sets), now)
+            self.db.save_composition(lot_id, clean_composition(detail.composition, title, sets,
+                                                               self._card_names()), now)
             fetched += 1
         log.info("lot compositions refreshed", extra={"fetched": fetched, "pending": len(pending)})
         return fetched
