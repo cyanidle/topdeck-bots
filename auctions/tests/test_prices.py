@@ -4,7 +4,7 @@ import unittest
 
 from topbot.db import Database
 from topbot.models import Card, Offer
-from topbot.prices import PricePoller, cheapest_per_card, group_offers, match_cards
+from topbot.prices import PricePoller, cheapest_per_card, collector_misread, group_offers, match_cards
 
 
 def make_offer(eng_name: str = "Tarmogoyf", rus_name: str | None = None, seller_name: str | None = "seller",
@@ -133,6 +133,31 @@ class MatchCardsTest(unittest.TestCase):
         cards = [Card(id=1, name_en="Tarmogoyf", name_ru="Тармогойф")]
         found = match_cards(cards, [make_offer("Tarmogoyf", "Тармогойф", cost=700, name="Тармо-гойф")])
         self.assertEqual(found, {})
+
+
+class CollectorMisreadTest(unittest.TestCase):
+    def test_price_equal_to_the_collector_number_is_dropped(self):
+        offer = make_offer("Enlightened Tutor", cost=19, name="Enlightened Tutor",
+                           line="1    Enlightened Tutor #19    6ED    en        mp    1799")
+        self.assertTrue(collector_misread(offer))
+        self.assertEqual(match_cards([Card(id=1, name_en="Enlightened Tutor")], [offer]), {})
+        self.assertEqual(group_offers([offer]), {})
+
+    def test_hash_with_space_and_the_number_sign(self):
+        for line in ("1 Otawara, Soaring City # 271 NEO en Foil", "1 Bayou №271 3ED en"):
+            self.assertTrue(collector_misread(make_offer("x", cost=271, name="x", line=line)))
+
+    def test_normal_line_keeps_the_offer(self):
+        offer = make_offer("Enlightened Tutor", cost=1799, name="Enlightened Tutor",
+                           line="1    Enlightened Tutor #19    6ED    en        mp    1799")
+        self.assertFalse(collector_misread(offer))
+        self.assertIn(1, match_cards([Card(id=1, name_en="Enlightened Tutor")], [offer]))
+
+    def test_line_without_a_collector_number_keeps_the_offer(self):
+        self.assertFalse(collector_misread(make_offer("x", cost=19, name="x", line="2 Shallow Grave MIR DE 19")))
+
+    def test_zero_priced_offer_is_not_flagged(self):
+        self.assertFalse(collector_misread(make_offer("x", cost=0, name="x", line="x #0")))
 
 
 class GroupOffersTest(unittest.TestCase):

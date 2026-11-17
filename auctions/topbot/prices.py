@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 
@@ -11,6 +12,15 @@ from .models import Card, Offer
 log = logging.getLogger(__name__)
 
 PRICE_BATCH = 8
+COLLECTOR = re.compile(r"[#№]\s*(\d{1,4})(?!\d)")
+
+
+def collector_misread(offer: Offer) -> bool:
+    """TOPDeck иногда берёт номер коллекционера за цену: «1 Enlightened Tutor #19 6ED en mp 1799» → cost=19."""
+    if offer.cost <= 0:
+        return False
+    return any(int(match.group(1)) == offer.cost for match in COLLECTOR.finditer(offer.line or ""))
+
 
 
 @dataclass(slots=True)
@@ -32,7 +42,7 @@ def match_cards(cards: list[Card], offers: list[Offer]) -> dict[int, list[Offer]
             by_name.setdefault(normalize(card.name_ru), card.id)
     found: dict[int, list[Offer]] = {}
     for offer in offers:
-        if not offer.name or offer.cost <= 0:
+        if not offer.name or offer.cost <= 0 or collector_misread(offer):
             continue
         card_id = by_name.get(normalize(offer.name))
         if card_id is None:
@@ -45,7 +55,7 @@ def group_offers(offers: list[Offer]) -> dict[str, tuple[str, list[Offer]]]:
     """Нечёткий ответ TOPDeck смешивает карты — различить их можно только по `name`."""
     grouped: dict[str, list[Offer]] = {}
     for offer in offers:
-        if not offer.name or offer.cost <= 0:
+        if not offer.name or offer.cost <= 0 or collector_misread(offer):
             continue
         grouped.setdefault(normalize(offer.name), []).append(offer)
     return {key: (items[0].name, items) for key, items in grouped.items()}
