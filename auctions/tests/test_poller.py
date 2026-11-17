@@ -7,7 +7,7 @@ import tempfile
 import time
 import unittest
 
-from topbot.db import Database, title_hash
+from topbot.db import WINDOWS_MIGRATION_KEY, Database, title_hash
 from topbot.matching import MATCH_VERSION
 from topbot.models import Lot, LotDetail, PollStats
 from topbot.poller import (ADMIN_ALERT_COOLDOWN_S, EMPTY_ALERT_THRESHOLD, FAILURE_ALERT_THRESHOLD,
@@ -313,6 +313,7 @@ class LegacyUsersMigrationTest(unittest.TestCase):
 class WindowRetirementTest(unittest.TestCase):
     def setUp(self) -> None:
         self.db = Database(":memory:")
+        self.db.set_meta(WINDOWS_MIGRATION_KEY, "0")
 
     def tearDown(self) -> None:
         self.db.close()
@@ -326,11 +327,18 @@ class WindowRetirementTest(unittest.TestCase):
         self.db._migrate_windows()
         self.assertEqual(self._windows(1), (86400, 3600, 900, 300))
 
-    def test_disabled_three_hour_window_is_not_replaced(self):
+    def test_five_minutes_are_added_even_when_three_hours_were_off(self):
         self.db.ensure_user(2)
         self.db.update_windows(2, (86400, 3600))
         self.db._migrate_windows()
-        self.assertEqual(self._windows(2), (86400, 3600))
+        self.assertEqual(self._windows(2), (86400, 3600, 300))
+
+    def test_migration_is_one_shot_so_a_disabled_window_stays_disabled(self):
+        self.db.ensure_user(3)
+        self.db._migrate_windows()
+        self.db.update_windows(3, (86400, 3600))
+        self.db._migrate_windows()
+        self.assertEqual(self._windows(3), (86400, 3600))
 
 
 class CompositionStorageTest(unittest.TestCase):

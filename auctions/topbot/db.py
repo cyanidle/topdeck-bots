@@ -16,6 +16,8 @@ from .models import Card, Counts, Lot, Offer, PollRun, User, WatchlistCard, Watc
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "schema.sql")
 SETS_SYNCED_KEY = "sets_synced_at"
 FINISH_CHUNK = 500
+WINDOWS_MIGRATION_KEY = "windows_migration_version"
+WINDOWS_MIGRATION_VERSION = 1
 
 log = logging.getLogger(__name__)
 
@@ -64,13 +66,18 @@ class Database:
         self._migrate_windows()
 
     def _migrate_windows(self) -> None:
+        if self.meta_int(WINDOWS_MIGRATION_KEY) >= WINDOWS_MIGRATION_VERSION:
+            return
+        retired = set(RETIRED_WINDOWS)
+        added = set(RETIRED_WINDOWS.values())
         for row in self.conn.execute("SELECT id, windows_json FROM users").fetchall():
-            windows = json.loads(row["windows_json"])
-            if not RETIRED_WINDOWS.keys() & set(windows):
+            windows = {int(window) for window in json.loads(row["windows_json"])}
+            migrated = (windows - retired) | added
+            if migrated == windows:
                 continue
-            migrated = {RETIRED_WINDOWS.get(int(window), int(window)) for window in windows}
             self.conn.execute("UPDATE users SET windows_json=? WHERE id=?",
                               (json.dumps(sorted(migrated, reverse=True)), row["id"]))
+        self.set_meta(WINDOWS_MIGRATION_KEY, str(WINDOWS_MIGRATION_VERSION))
 
     def _sync_match_version(self) -> None:
         row = self.conn.execute("SELECT value FROM meta WHERE key='match_version'").fetchone()
