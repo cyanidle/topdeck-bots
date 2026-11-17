@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 
 from .bot import TelegramSender, build_notifier, create_bot, create_dispatcher, setup_bot_ui
 from .catalog import CardCatalog
@@ -106,6 +107,7 @@ async def _alert(logger: logging.Logger, action, *args) -> None:
 async def _poll_loop(settings: Settings, poller: AuctionPoller, alerter: AdminAlerter) -> None:
     logger = logging.getLogger("poller")
     while True:
+        started = time.monotonic()
         try:
             stats = await poller.poll_once()
         except Exception as exc:
@@ -113,7 +115,7 @@ async def _poll_loop(settings: Settings, poller: AuctionPoller, alerter: AdminAl
             await _alert(logger, alerter.on_failure, repr(exc))
         else:
             await _alert(logger, alerter.on_success, stats)
-        await asyncio.sleep(settings.poll_interval_s)
+        await asyncio.sleep(max(0.0, settings.poll_interval_s - (time.monotonic() - started)))
 
 
 async def _prices_loop(settings: Settings, poller: PricePoller) -> None:
