@@ -77,7 +77,7 @@ async def cmd_poll(settings: Settings) -> int:
     db = Database(settings.db_path)
     session, client = await _client(settings)
 
-    async def sender(user_id: int, text: str) -> None:
+    async def sender(user_id: int, text: str, buttons=None) -> None:
         print(f"[notify -> {user_id}]\n{text}\n")
 
     try:

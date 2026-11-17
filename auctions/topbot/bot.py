@@ -552,6 +552,7 @@ async def cb_remove(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("skip:"))
 async def cb_skip(callback: CallbackQuery) -> None:
     db = _database()
+    db.ensure_user(callback.from_user.id, callback.from_user.username)
     lot_id = int(callback.data.split(":", 1)[1])
     added = db.ignore_lot(callback.from_user.id, lot_id)
     log.info("lot ignored", extra={"user_id": callback.from_user.id, "lot_id": lot_id, "new": added})

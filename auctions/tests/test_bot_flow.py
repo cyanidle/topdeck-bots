@@ -965,7 +965,6 @@ class StartDeepLinkTest(unittest.IsolatedAsyncioTestCase):
 
 
 @unittest.skipUnless(HAS_AIOGRAM, "aiogram is not installed")
-@unittest.skipUnless(HAS_AIOGRAM, "aiogram is not installed")
 class IgnoreLotButtonTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         from topbot import bot as bot_module
@@ -1026,6 +1025,7 @@ class IgnoreLotButtonTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.bot._buttons_markup(None))
 
 
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram is not installed")
 class CallbackAnswerTest(unittest.IsolatedAsyncioTestCase):
     async def test_stale_callback_answer_does_not_break_handler(self):
         from aiogram.exceptions import TelegramBadRequest

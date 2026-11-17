@@ -492,7 +492,7 @@ class AdminAlerterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.sent, [])
         await self.alerter.on_failure("boom")
         self.assertEqual([user_id for user_id, _ in self.sent], [7])
-        self.assertIn(f"{FAILURE_ALERT_THRESHOLD} опроса", self.sent[0][1])
+        self.assertIn(f"{FAILURE_ALERT_THRESHOLD} опросов", self.sent[0][1])
         self.assertIn("boom", self.sent[0][1])
 
     async def test_recovery_is_reported_once(self):
@@ -535,7 +535,7 @@ class AdminAlerterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.sent, [])
         await self.alerter.on_success(PollStats(lots=200, truncated=True))
         self.assertEqual(len(self.sent), 1)
-        self.assertIn("меньше половины лотов", self.sent[0][1])
+        self.assertIn("меньше 90% лотов", self.sent[0][1])
         await self.alerter.on_success(PollStats(lots=200, truncated=True))
         self.assertEqual(len(self.sent), 1)
 

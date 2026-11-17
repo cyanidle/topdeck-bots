@@ -48,7 +48,7 @@ class AuctionPoller:
         now = int(self.clock())
         log.info("auction poll received", extra={"lots": len(lots)})
         stats = PollStats(lots=len(lots))
-        active_before = self.db.active_lots_count()
+        previous_active = self.db.active_lots_count()
         known_ends = self.db.lot_end_ts_map([lot.id for lot in lots])
         for lot in lots:
             previous_end = known_ends.get(lot.id)
@@ -60,6 +60,7 @@ class AuctionPoller:
                                                     "bids": lot.bid_count})
             self.db.upsert_lot(lot, now)
         stats.vanished = self.db.mark_overdue(now)
+        active_before = max(0, previous_active - stats.vanished)
         if _poll_is_complete(len(lots), active_before):
             stats.vanished += self.db.mark_vanished([lot.id for lot in lots])
         elif lots:
@@ -121,9 +122,10 @@ class AuctionPoller:
         if self.db.meta_int(COMPOSITION_CLEAN_KEY) >= CLEAN_VERSION:
             return
         sets = self.db.set_index()
-        if not sets.names:
+        names = self._card_names()
+        if not sets.names or not names:
             return
-        cleaned = self.db.clean_compositions(sets, self._card_names())
+        cleaned = self.db.clean_compositions(sets, names)
         self.db.set_meta(COMPOSITION_CLEAN_KEY, str(CLEAN_VERSION))
         log.info("stored compositions cleaned", extra={"lots": cleaned})
 
@@ -205,7 +207,7 @@ class AdminAlerter:
         if self.failures < self.threshold or not self._cooldown_passed("failures"):
             return
         self.alerted = True
-        await self._send(f"topbot: {self.failures} опроса аукционов подряд с ошибкой.\n{error}")
+        await self._send(f"topbot: {self.failures} опросов аукционов подряд с ошибкой.\n{error}")
 
     async def on_success(self, stats: PollStats) -> None:
         recovered = self.alerted
@@ -215,12 +217,13 @@ class AdminAlerter:
             await self._send("topbot: опрос аукционов восстановился.")
         self.empty_streak = self.empty_streak + 1 if stats.lots == 0 else 0
         if self.empty_streak == self.empty_threshold and self._cooldown_passed("empty"):
-            await self._send("topbot: два опроса подряд вернули 0 лотов — похоже, сайт изменил вёрстку "
-                             "или недоступен.")
+            await self._send(f"topbot: {self.empty_streak} опроса подряд вернули 0 лотов — похоже, сайт изменил "
+                             f"вёрстку или недоступен.")
         self.truncated_streak = self.truncated_streak + 1 if stats.truncated else 0
         if self.truncated_streak == self.truncated_threshold and self._cooldown_passed("truncated"):
-            await self._send("topbot: два опроса подряд вернули меньше половины лотов — выкупленные и снятые "
-                             "лоты не закрываются, /list может показывать завершённые аукционы.")
+            await self._send(f"topbot: {self.truncated_streak} опроса подряд вернули меньше "
+                             f"{round(TRUNCATED_POLL_RATIO * 100)}% лотов — выкупленные и снятые лоты не "
+                             f"закрываются, /list может показывать завершённые аукционы.")
 
 
 def _poll_is_complete(seen: int, active_before: int) -> bool:

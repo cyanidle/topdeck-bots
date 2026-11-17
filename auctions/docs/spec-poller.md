@@ -55,7 +55,7 @@
 * текст окна собирает `messages.render_auction_message`; цены продавцов (`💰 Цены у продавцов: …`, до 3 самых дешёвых, по одному — самому дешёвому — на продавца) берутся **из кэша** `card_offers` (`Database.top_offers_by_card`, лимит `messages.INLINE_OFFERS`), живых запросов к `singles/search` при рассылке нет — иначе рассылка зависела бы от сети и от скорости TopDeck; запрос ленивый: только когда окно реально назрело;
 * запаса `w + 420 с` больше нет: досрочных отправок не бывает, `due_window` требует `remaining <= w`; опоздание возможно только после простоя и ограничено правилом `remaining >= w // 2` (иначе окно считается истёкшим);
 * дедупликация та же (`notifications`, `state='sent'`), поэтому перезапуск процесса не приводит к повторной отправке: план строится по фактическим записям в БД; продление дедлайна (ставка в последние 15 минут) тоже не переотправляет уже ушедшие окна — только сдвигает план и `/list`;
-* отложенные окна (`/mute`, лимит) остаются в плане и переотправляются на следующем тике — теперь раз в минуту, а не раз в 14 минут.
+* отложенные окна (`/mute`, лимит) остаются в плане и переотправляются на следующем тике — раз в минуту (`TICK_S`);
 
 Пример таймлайна лота (окна 24ч/1ч/15м/5м):
 
@@ -130,7 +130,7 @@ t-0ч05м00с   планировщик: r=5м00с  → «до конца 5 ми�
 Пример текстового лога:
 
 ```
-2026-11-16 00:12:31 INFO  topbot.poller auction poll done | lots=365 matched_lots=3 watched_lots=1 vanished=2 compositions=0 ms=843
+2026-11-16 00:12:31 INFO  topbot.poller auction poll done | lots=365 matched_lots=3 watched_lots=1 vanished=2 compositions=0 extended=0 requests=1 ms=843
 2026-11-16 00:12:31 INFO  topbot.dispatch auction notification | user_id=100000001 lot_id=550068 window_s=900 remaining_s=900 delivered=True
 2026-11-16 00:12:31 INFO  topbot.notifier notification delivered | notification_id=57 user_id=100000001 kind=auction_window ref_id=550068
 ```

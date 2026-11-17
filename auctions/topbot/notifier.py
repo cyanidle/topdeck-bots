@@ -8,7 +8,8 @@ from .db import Database
 
 log = logging.getLogger(__name__)
 
-Sender = Callable[..., Awaitable[None]]
+Buttons = Sequence[tuple[str, str]]
+Sender = Callable[[int, str, Buttons | None], Awaitable[None]]
 
 
 class Notifier:
