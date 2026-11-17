@@ -6,6 +6,7 @@ import re
 import time
 from dataclasses import replace
 from html import escape
+from typing import Sequence
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -152,6 +153,13 @@ async def _add_card(user_id: int, name: str) -> tuple[bool, str]:
     db.invalidate_lot_matches()
     ensure_matches(db)
     return added, card.name_en
+
+
+def _buttons_markup(buttons: Sequence[tuple[str, str]] | None) -> InlineKeyboardMarkup | None:
+    if not buttons:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=text, callback_data=data)] for text, data in buttons])
 
 
 def _keyboard(candidates: list[str]) -> InlineKeyboardMarkup:
@@ -541,6 +549,20 @@ async def cb_remove(callback: CallbackQuery) -> None:
     await _answer(callback, "Удалено" if removed else "Уже удалено")
 
 
+@router.callback_query(F.data.startswith("skip:"))
+async def cb_skip(callback: CallbackQuery) -> None:
+    db = _database()
+    lot_id = int(callback.data.split(":", 1)[1])
+    added = db.ignore_lot(callback.from_user.id, lot_id)
+    log.info("lot ignored", extra={"user_id": callback.from_user.id, "lot_id": lot_id, "new": added})
+    await _answer(callback, "Больше не показываю этот лот" if added else "Этот лот уже скрыт")
+    if callback.message:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramAPIError as exc:
+            log.info("ignore buttons are not removable", extra={"error": repr(exc)})
+
+
 @router.message(Command("remove"))
 async def cmd_remove(message: Message) -> None:
     payload = normalize((message.text or "").partition(" ")[2])
@@ -846,8 +868,9 @@ class TelegramSender:
     def __init__(self, bot: Bot):
         self.bot = bot
 
-    async def __call__(self, user_id: int, text: str) -> None:
-        await self.bot.send_message(user_id, text, disable_web_page_preview=False)
+    async def __call__(self, user_id: int, text: str, buttons: Sequence[tuple[str, str]] | None = None) -> None:
+        await self.bot.send_message(user_id, text, disable_web_page_preview=False,
+                                    reply_markup=_buttons_markup(buttons))
 
 
 def build_notifier(db: Database, bot: Bot) -> Notifier:

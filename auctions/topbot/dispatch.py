@@ -22,6 +22,8 @@ async def dispatch_lot_windows(db: Database, notifier: Notifier, lot: Lot,
     methods = db.lot_card_methods(lot.id)
     offers_by_card = None
     prices_known: dict[int, bool] = {}
+    ignored_by_user: dict[int, set[int]] = {}
+    buttons = [("🚫 Не интересно", f"skip:{lot.id}")]
     remaining = lot.end_ts - now
     sent = 0
     for card_id in watched:
@@ -29,6 +31,10 @@ async def dispatch_lot_windows(db: Database, notifier: Notifier, lot: Lot,
         from_composition = methods.get(card_id, "").startswith("composition:")
         card_name = card.name_en if card and from_composition else None
         for user_id in subscribers[card_id]:
+            if user_id not in ignored_by_user:
+                ignored_by_user[user_id] = db.ignored_lot_ids(user_id)
+            if lot.id in ignored_by_user[user_id]:
+                continue
             user = db.get_user(user_id)
             window = due_window(remaining, user.windows,
                                 db.sent_windows(user_id, "auction_window", lot.id))
@@ -42,7 +48,7 @@ async def dispatch_lot_windows(db: Database, notifier: Notifier, lot: Lot,
                                           offers=offers_by_card.get(card_id, []),
                                           prices_known=prices_known.get(card_id, True))
             delivered = await notifier.notify(user, "auction_window", lot.id, window, text,
-                                              {"lot": lot.id, "card_id": card_id})
+                                              {"lot": lot.id, "card_id": card_id}, buttons=buttons)
             log.info("auction notification", extra={"user_id": user_id, "lot_id": lot.id,
                                                     "window_s": window, "remaining_s": remaining,
                                                     "delivered": delivered})

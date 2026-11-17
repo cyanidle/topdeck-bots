@@ -164,6 +164,19 @@ class PollerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((stats.vanished, stats.truncated), (1, False))
         self.assertEqual(self._states()[50], "finished")
 
+    async def test_extended_deadline_is_picked_up_and_logged(self):
+        poller = self.poller([lot(95, "Bayou (3ED, №283)", NOW + 600)])
+        await poller.poll_once()
+        poller.client.lots = [lot(95, "Bayou (3ED, №283)", NOW + 1500, current_bid=900)]
+        with self.assertLogs("topbot.poller", level="INFO") as logs:
+            stats = await poller.poll_once()
+        self.assertEqual(stats.extended, 1)
+        self.assertEqual(self.db.lot(95).end_ts, NOW + 1500)
+        moved = [record for record in logs.records if record.getMessage() == "lot end_ts moved"]
+        self.assertEqual(len(moved), 1)
+        self.assertEqual(moved[0].delta_s, 900)
+        self.assertEqual(moved[0].new_end_ts, NOW + 1500)
+
     async def test_overdue_lots_close_even_in_a_truncated_poll(self):
         lots = [lot(70 + index, f"Bayou (3ED, №283) {index}", NOW + 3600) for index in range(10)]
         lots.append(lot(80, "Bayou (3ED, №283) old", NOW - 60))
@@ -259,6 +272,14 @@ class WatchlistCountsTest(unittest.TestCase):
         self.db.ensure_user(42)
         self.db.update_windows(42, (3600, 900))
         self.assertEqual(self.db.get_user(42).windows, (3600, 900))
+
+    def test_lot_ignore_is_idempotent(self):
+        self.db.ensure_user(42)
+        self.db.upsert_lot(make_lot(1, "Bayou (3ED, №283)", NOW + 3600), NOW)
+        self.assertTrue(self.db.ignore_lot(42, 1))
+        self.assertFalse(self.db.ignore_lot(42, 1))
+        self.assertEqual(self.db.ignored_lot_ids(42), {1})
+        self.assertEqual(self.db.ignored_lot_ids(7), set())
 
 
 class LegacyUsersMigrationTest(unittest.TestCase):
@@ -448,7 +469,7 @@ class AdminAlerterTest(unittest.IsolatedAsyncioTestCase):
         self.sent: list[tuple[int, str]] = []
         self.clock = [NOW]
 
-        async def sender(user_id: int, text: str) -> None:
+        async def sender(user_id: int, text: str, buttons=None) -> None:
             self.sent.append((user_id, text))
 
         self.sender = sender

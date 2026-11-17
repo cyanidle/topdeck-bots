@@ -104,6 +104,13 @@ CREATE TABLE notifications (
     UNIQUE (user_id, kind, ref_id, window_s)
 );
 
+CREATE TABLE lot_ignores (                           -- «🚫 Не интересно» с кнопки уведомления
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    lot_id     INTEGER NOT NULL REFERENCES lots(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, lot_id)                    -- по этому лоту пользователю больше не пишем
+);
+
 -- 7. Кэш цен у продавцов -----------------------------------------------------
 CREATE TABLE card_offers (                           -- актуальные предложения по картам watchlist'а
     card_id     INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,

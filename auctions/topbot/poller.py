@@ -49,7 +49,15 @@ class AuctionPoller:
         log.info("auction poll received", extra={"lots": len(lots)})
         stats = PollStats(lots=len(lots))
         active_before = self.db.active_lots_count()
+        known_ends = self.db.lot_end_ts_map([lot.id for lot in lots])
         for lot in lots:
+            previous_end = known_ends.get(lot.id)
+            if previous_end is not None and lot.end_ts > previous_end:
+                stats.extended += 1
+                log.info("lot end_ts moved", extra={"lot_id": lot.id, "old_end_ts": previous_end,
+                                                    "new_end_ts": lot.end_ts,
+                                                    "delta_s": lot.end_ts - previous_end,
+                                                    "bids": lot.bid_count})
             self.db.upsert_lot(lot, now)
         stats.vanished = self.db.mark_overdue(now)
         if _poll_is_complete(len(lots), active_before):
@@ -90,6 +98,7 @@ class AuctionPoller:
                                              "watched_lots": stats.watched_lots,
                                              "vanished": stats.vanished,
                                              "compositions": stats.compositions,
+                                             "extended": stats.extended,
                                              "requests": 1 + stats.compositions, "ms": duration_ms})
         return stats
 

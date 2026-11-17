@@ -41,10 +41,12 @@ def make_offer(seller: str, cost: int, eng_name: str = "Bayou") -> Offer:
 class RecordingNotifier(Notifier):
     def __init__(self, db: Database):
         self.sent: list[tuple[int, str]] = []
+        self.buttons: list[list[tuple[str, str]] | None] = []
         super().__init__(db, sender=self._send)
 
-    async def _send(self, user_id: int, text: str) -> None:
+    async def _send(self, user_id: int, text: str, buttons=None) -> None:
         self.sent.append((user_id, text))
+        self.buttons.append(buttons)
 
 
 class SchedulerTestBase(unittest.IsolatedAsyncioTestCase):
@@ -176,6 +178,27 @@ class NotificationPricesTest(SchedulerTestBase):
         self.add_lot(make_lot(5, "Bayou (3ED, №283)", NOW + 3600))
         self.assertEqual(await self.dispatch(NOW), 1)
         self.assertNotIn("Bernard", self.notifier.sent[0][1])
+
+
+class NotificationButtonsTest(SchedulerTestBase):
+    async def test_notification_carries_ignore_lot_button(self):
+        self.add_lot(make_lot(1, "Bayou (3ED, №283)", NOW + 3600))
+        self.assertEqual(await self.dispatch(NOW), 1)
+        self.assertEqual(self.notifier.buttons[0], [("🚫 Не интересно", "skip:1")])
+
+    async def test_ignored_lot_is_not_notified(self):
+        self.add_lot(make_lot(1, "Bayou (3ED, №283)", NOW + 3600))
+        self.db.ignore_lot(42, 1)
+        self.assertEqual(await self.dispatch(NOW), 0)
+        self.assertEqual(self.notifier.sent, [])
+
+    async def test_ignore_is_per_lot_and_per_user(self):
+        self.db.ensure_user(43, "other")
+        self.db.add_to_watchlist(43, self.card)
+        self.add_lot(make_lot(1, "Bayou (3ED, №283)", NOW + 3600))
+        self.db.ignore_lot(42, 1)
+        self.assertEqual(await self.dispatch(NOW), 1)
+        self.assertEqual([user_id for user_id, _ in self.notifier.sent], [43])
 
 
 class DelayTest(SchedulerTestBase):

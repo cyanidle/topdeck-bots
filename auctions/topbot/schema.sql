@@ -114,6 +114,13 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE UNIQUE INDEX IF NOT EXISTS notifications_uniq
     ON notifications(user_id, kind, ref_id, COALESCE(window_s, 0));
 
+CREATE TABLE IF NOT EXISTS lot_ignores (
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    lot_id     INTEGER NOT NULL REFERENCES lots(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, lot_id)
+);
+
 CREATE TABLE IF NOT EXISTS poll_runs (
     id          INTEGER PRIMARY KEY,
     kind        TEXT NOT NULL,

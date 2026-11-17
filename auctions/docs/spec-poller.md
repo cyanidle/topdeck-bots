@@ -54,7 +54,7 @@
 * в момент `end_ts - w` вызывается та же рассылка, что раньше жила в поллере (`dispatch.dispatch_lot_windows`), поэтому окно уходит **минута в минуту**: срабатывание в пределах ±1 с от номинала (целые секунды в `delay`), никогда не раньше;
 * текст окна собирает `messages.render_auction_message`; цены продавцов (`💰 Цены у продавцов: …`, до 3 самых дешёвых, по одному — самому дешёвому — на продавца) берутся **из кэша** `card_offers` (`Database.top_offers_by_card`, лимит `messages.INLINE_OFFERS`), живых запросов к `singles/search` при рассылке нет — иначе рассылка зависела бы от сети и от скорости TopDeck; запрос ленивый: только когда окно реально назрело;
 * запаса `w + 420 с` больше нет: досрочных отправок не бывает, `due_window` требует `remaining <= w`; опоздание возможно только после простоя и ограничено правилом `remaining >= w // 2` (иначе окно считается истёкшим);
-* дедупликация та же (`notifications`, `state='sent'`), поэтому перезапуск процесса не приводит к повторной отправке: план строится по фактическим записям в БД;
+* дедупликация та же (`notifications`, `state='sent'`), поэтому перезапуск процесса не приводит к повторной отправке: план строится по фактическим записям в БД; продление дедлайна (ставка в последние 15 минут) тоже не переотправляет уже ушедшие окна — только сдвигает план и `/list`;
 * отложенные окна (`/mute`, лимит) остаются в плане и переотправляются на следующем тике — теперь раз в минуту, а не раз в 14 минут.
 
 Пример таймлайна лота (окна 24ч/1ч/15м/5м):
@@ -115,7 +115,8 @@ t-0ч05м00с   планировщик: r=5м00с  → «до конца 5 ми�
 | `topdeck fetch` | `path, status, chars, ms` |
 | `topdeck auctions parsed` / `topdeck singles search` | `lots` / `cards, offers, truncated, sources` |
 | `scryfall request` | `path, status, ms, attempt` (+ `scryfall rate limited` с `retry_after`) |
-| `auction poll received` / `auction poll done` | `lots` / `lots, matched_lots, watched_lots, vanished, compositions, ms` |
+| `auction poll received` / `auction poll done` | `lots` / `lots, matched_lots, watched_lots, vanished, compositions, extended, requests, ms` |
+| `lot end_ts moved` | `lot_id, old_end_ts, new_end_ts, delta_s, bids` (продление после ставки в последние 15 минут) |
 | `auction poll looks truncated` | `lots, active` |
 | `lot matches watchlist` | `lot_id, cards, watched, ends_in_min` |
 | `window scheduler started` / `windows dispatched` | `tick_s` / `sent` |

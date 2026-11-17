@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Sequence
 
 from .db import Database
 
 log = logging.getLogger(__name__)
 
-Sender = Callable[[int, str], Awaitable[None]]
+Sender = Callable[..., Awaitable[None]]
 
 
 class Notifier:
@@ -18,7 +18,8 @@ class Notifier:
         self.max_per_hour = max_per_hour
 
     async def notify(self, user, kind: str, ref_id: int, window_s: int | None,
-                     text: str, payload: dict | None = None) -> bool:
+                     text: str, payload: dict | None = None,
+                     buttons: Sequence[tuple[str, str]] | None = None) -> bool:
         now = int(time.time())
         muted = bool(user.muted_until and user.muted_until > now)
         log.info("notify decision", extra={"user_id": user.id, "kind": kind, "ref_id": ref_id,
@@ -47,7 +48,7 @@ class Notifier:
             self.db.mark_sent(notification_id, "skipped")
             return False
         try:
-            await self.sender(user.id, text)
+            await self.sender(user.id, text, buttons)
         except Exception:
             log.exception("failed to deliver notification", extra={"notification_id": notification_id,
                                                                     "user_id": user.id})

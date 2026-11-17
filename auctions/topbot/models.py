@@ -84,6 +84,7 @@ class PollStats:
     watched_lots: int = 0
     vanished: int = 0
     compositions: int = 0
+    extended: int = 0
     truncated: bool = False
 
 

@@ -965,6 +965,60 @@ class StartDeepLinkTest(unittest.IsolatedAsyncioTestCase):
 
 
 @unittest.skipUnless(HAS_AIOGRAM, "aiogram is not installed")
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram is not installed")
+class IgnoreLotButtonTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        from topbot import bot as bot_module
+
+        self.bot = bot_module
+        self.db = Database(":memory:")
+        self.db.ensure_user(42, "tester")
+        now = int(time.time())
+        self.db.upsert_lot(Lot(id=5, title="Bayou (3ED, №283)", end_ts=now + 3600, start_ts=now - 3600,
+                               start_bid=500, current_bid=700, bid_count=2, bin_value=0, seller_id=1,
+                               seller_name="seller", seller_city="Москва", seller_refs=3,
+                               shipping_quick=None, image_url=None,
+                               url="https://topdeck.ru/apps/toptrade/auctions/5"), now)
+        bot_module.ctx.db = self.db
+
+    def tearDown(self) -> None:
+        self.db.close()
+
+    def _callback(self, data: str):
+        answers: list[str | None] = []
+        edits: list[object] = []
+
+        class FakeMessage:
+            async def edit_reply_markup(self, reply_markup=None):
+                edits.append(reply_markup)
+
+        class FakeCallback:
+            from_user = type("U", (), {"id": 42, "username": "tester"})()
+            message = FakeMessage()
+
+            async def answer(self, text=None, **kwargs):
+                answers.append(text)
+
+        callback = FakeCallback()
+        callback.data = data
+        callback.answers = answers
+        callback.edits = edits
+        return callback
+
+    async def test_ignore_button_hides_the_lot(self):
+        callback = self._callback("skip:5")
+        await self.bot.cb_skip(callback)
+        self.assertEqual(self.db.ignored_lot_ids(42), {5})
+        self.assertEqual(callback.answers, ["Больше не показываю этот лот"])
+        self.assertEqual(callback.edits, [None])
+
+    async def test_repeated_ignore_is_reported(self):
+        self.db.ignore_lot(42, 5)
+        callback = self._callback("skip:5")
+        await self.bot.cb_skip(callback)
+        self.assertEqual(callback.answers, ["Этот лот уже скрыт"])
+
+
 class CallbackAnswerTest(unittest.IsolatedAsyncioTestCase):
     async def test_stale_callback_answer_does_not_break_handler(self):
         from aiogram.exceptions import TelegramBadRequest

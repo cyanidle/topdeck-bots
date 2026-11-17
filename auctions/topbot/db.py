@@ -250,6 +250,15 @@ class Database:
             url=f"https://topdeck.ru/apps/toptrade/auctions/{row['id']}",
         )
 
+    def lot_end_ts_map(self, lot_ids: Sequence[int]) -> dict[int, int]:
+        ends: dict[int, int] = {}
+        for start in range(0, len(lot_ids), FINISH_CHUNK):
+            chunk = lot_ids[start:start + FINISH_CHUNK]
+            placeholders = ",".join("?" for _ in chunk)
+            for row in self.conn.execute(f"SELECT id, end_ts FROM lots WHERE id IN ({placeholders})", tuple(chunk)):
+                ends[int(row["id"])] = int(row["end_ts"])
+        return ends
+
     def upsert_lot(self, lot: Lot, now: int) -> None:
         self.conn.execute(
             "INSERT INTO lots(id, title, title_hash, end_ts, start_ts, start_bid, current_bid, bid_count,"
@@ -401,6 +410,15 @@ class Database:
             (user_id, kind, ref_id),
         ).fetchall()
         return {int(row["window_s"]) for row in rows}
+
+    def ignore_lot(self, user_id: int, lot_id: int) -> bool:
+        cur = self.conn.execute("INSERT OR IGNORE INTO lot_ignores(user_id, lot_id, created_at) VALUES(?,?,?)",
+                                (user_id, lot_id, int(time.time())))
+        return cur.rowcount > 0
+
+    def ignored_lot_ids(self, user_id: int) -> set[int]:
+        rows = self.conn.execute("SELECT lot_id FROM lot_ignores WHERE user_id=?", (user_id,)).fetchall()
+        return {int(row["lot_id"]) for row in rows}
 
     def reserve_notification(self, user_id: int, kind: str, ref_id: int, window_s: int | None,
                              payload: dict | None = None) -> int | None:
