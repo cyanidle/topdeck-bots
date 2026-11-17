@@ -1017,6 +1017,13 @@ class IgnoreLotButtonTest(unittest.IsolatedAsyncioTestCase):
         await self.bot.cb_skip(callback)
         self.assertEqual(callback.answers, ["Этот лот уже скрыт"])
 
+    async def test_ignore_from_a_forwarded_message_creates_the_user(self):
+        callback = self._callback("skip:5")
+        callback.from_user = type("U", (), {"id": 777, "username": "friend"})()
+        await self.bot.cb_skip(callback)
+        self.assertEqual(self.db.ignored_lot_ids(777), {5})
+        self.assertEqual(self.db.get_user(777).username, "friend")
+
     def test_notification_buttons_become_inline_keyboard(self):
         markup = self.bot._buttons_markup([("🚫 Не интересно", "skip:5")])
         self.assertEqual(len(markup.inline_keyboard), 1)
