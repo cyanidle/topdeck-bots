@@ -4,7 +4,7 @@ import unittest
 
 from topbot.db import Database
 from topbot.models import Card, Offer
-from topbot.prices import PricePoller, match_cards
+from topbot.prices import PricePoller, cheapest_per_card, group_offers, match_cards
 
 
 def make_offer(eng_name: str = "Tarmogoyf", rus_name: str | None = None, seller_name: str | None = "seller",
@@ -102,7 +102,7 @@ class MatchCardsTest(unittest.TestCase):
         cards = [Card(id=1, name_en="Tarmogoyf", name_ru="Тармогойф"), Card(id=2, name_en="Lightning Bolt")]
         found = match_cards(cards, [
             make_offer("Tarmogoyf", "Тармогойф", cost=100),
-            make_offer("Some English Print", "Тармогойф", cost=200),
+            make_offer("Тармогойф", cost=200, name="Тармогойф"),
             make_offer("Lightning Bolt", cost=50),
             make_offer("Bayou", cost=999),
             make_offer("Tarmogoyf", cost=0),
@@ -110,6 +110,55 @@ class MatchCardsTest(unittest.TestCase):
         self.assertEqual(sorted(found), [1, 2])
         self.assertEqual([offer.cost for offer in found[1]], [100, 200])
         self.assertEqual([offer.cost for offer in found[2]], [50])
+
+    def test_echo_names_do_not_attach_a_foreign_card(self):
+        cards = [Card(id=14, name_en="Shallow Grave")]
+        found = match_cards(cards, [
+            make_offer("Shallow Grave", cost=53, name="Curse of Shallow Graves"),
+            make_offer("Shallow Grave", cost=11550, name="Shallow Grave"),
+        ])
+        self.assertEqual([offer.cost for offer in found[14]], [11550])
+
+    def test_offer_without_a_card_name_is_dropped(self):
+        self.assertEqual(match_cards([Card(id=1, name_en="Tarmogoyf")], [make_offer("Tarmogoyf", name="")]), {})
+
+    def test_card_without_russian_name_ignores_foreign_echo(self):
+        cards = [Card(id=3, name_en="Captain James T. Kirk")]
+        found = match_cards(cards, [make_offer("Captain James T. Kirk", "Кирк", cost=700,
+                                               name="Curse of Shallow Graves")])
+        self.assertEqual(found, {})
+
+
+    def test_russian_listing_with_another_translation_is_dropped(self):
+        cards = [Card(id=1, name_en="Tarmogoyf", name_ru="Тармогойф")]
+        found = match_cards(cards, [make_offer("Tarmogoyf", "Тармогойф", cost=700, name="Тармо-гойф")])
+        self.assertEqual(found, {})
+
+
+class GroupOffersTest(unittest.TestCase):
+    def test_groups_by_the_card_of_the_listing(self):
+        offers = [make_offer("Eladamri", cost=197, name="Eladamri's Call"),
+                  make_offer("Eladamri", cost=600, name="Eladamri, Korvecdal"),
+                  make_offer("Eladamri", cost=390, name="Eladamri's Vineyard"),
+                  make_offer("Eladamri", cost=720, name="Eladamri, Korvecdal")]
+        groups = group_offers(offers)
+        self.assertEqual(sorted(group[0] for group in groups.values()),
+                         ["Eladamri's Call", "Eladamri's Vineyard", "Eladamri, Korvecdal"])
+        korvecdal = groups["eladamri korvecdal"]
+        self.assertEqual([offer.cost for offer in korvecdal[1]], [600, 720])
+
+    def test_nameless_and_zero_priced_offers_are_ignored(self):
+        offers = [make_offer("x", cost=0, name="Shallow Grave"), make_offer("x", cost=10, name="")]
+        self.assertEqual(group_offers(offers), {})
+
+    def test_cheapest_per_card_keeps_one_offer(self):
+        offers = [make_offer("tarmo", cost=9000, name="Tarmogoyf"),
+                  make_offer("tarmo", cost=8500, name="Tarmogoyf"),
+                  make_offer("tarmo", cost=100, name="Tarmogoyf Nest")]
+        best = cheapest_per_card(offers)
+        self.assertEqual(best["tarmogoyf"][0], "Tarmogoyf")
+        self.assertEqual(best["tarmogoyf"][1].cost, 8500)
+        self.assertEqual(best["tarmogoyf nest"][1].cost, 100)
 
 
 class PricePollerTest(unittest.IsolatedAsyncioTestCase):

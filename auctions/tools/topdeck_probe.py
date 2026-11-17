@@ -49,7 +49,7 @@ def search_singles(cards: list[str], throttle: float = 1.0) -> tuple[list[dict],
     query = "\n".join(cards)
     html = fetch(f"{BASE}/apps/toptrade/singles/search?q={urllib.parse.quote(query)}")
     offers = embedded_records(html)
-    found = {str(o.get("eng_name", "")).strip().lower() for o in offers}
+    found = {str(o.get("name", "")).strip().lower() for o in offers}
     missing = [c for c in cards if c.lower() not in found]
     if len(offers) >= RECORD_CAP:
         missing = cards
@@ -75,7 +75,7 @@ def lot_thumb(lot: dict) -> str:
 def cheapest_by_card(offers: list[dict]) -> dict[str, dict]:
     best: dict[str, dict] = {}
     for offer in offers:
-        name = str(offer.get("eng_name", "")).strip()
+        name = str(offer.get("name", "")).strip()
         cost = int(offer.get("cost") or 0)
         if not name or cost <= 0:
             continue

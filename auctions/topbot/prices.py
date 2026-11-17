@@ -21,6 +21,8 @@ class PriceStats:
 
 
 def match_cards(cards: list[Card], offers: list[Offer]) -> dict[int, list[Offer]]:
+    """Матчит по `name` — карте из строки продавца; `eng_name`/`rus_name` в ответе TOPDeck
+    содержат канонизированный запрос, а не карту (запрос «Shallow Grave» даёт «Curse of Shallow Graves»)."""
     by_name: dict[str, int] = {}
     for card in cards:
         if card.id is None:
@@ -30,13 +32,30 @@ def match_cards(cards: list[Card], offers: list[Offer]) -> dict[int, list[Offer]
             by_name.setdefault(normalize(card.name_ru), card.id)
     found: dict[int, list[Offer]] = {}
     for offer in offers:
-        card_id = by_name.get(normalize(offer.eng_name))
-        if card_id is None and offer.rus_name:
-            card_id = by_name.get(normalize(offer.rus_name))
-        if card_id is None or offer.cost <= 0:
+        if not offer.name or offer.cost <= 0:
+            continue
+        card_id = by_name.get(normalize(offer.name))
+        if card_id is None:
             continue
         found.setdefault(card_id, []).append(offer)
     return found
+
+
+def group_offers(offers: list[Offer]) -> dict[str, tuple[str, list[Offer]]]:
+    """Нечёткий ответ TOPDeck смешивает карты — различить их можно только по `name`."""
+    grouped: dict[str, list[Offer]] = {}
+    for offer in offers:
+        if not offer.name or offer.cost <= 0:
+            continue
+        grouped.setdefault(normalize(offer.name), []).append(offer)
+    return {key: (items[0].name, items) for key, items in grouped.items()}
+
+
+def cheapest_per_card(offers: list[Offer]) -> dict[str, tuple[str, Offer]]:
+    best: dict[str, tuple[str, Offer]] = {}
+    for key, (label, items) in group_offers(offers).items():
+        best[key] = (label, min(items, key=lambda offer: offer.cost))
+    return best
 
 
 async def search_offers(client, names: list[str]) -> list[Offer]:

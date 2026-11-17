@@ -27,7 +27,7 @@ from .messages import INLINE_OFFERS, money, offers_line, plural, render_offer_li
 from .models import Card, Offer, WatchlistCard
 from .notifier import Notifier
 from .poller import ensure_matches
-from .prices import refresh_cards
+from .prices import cheapest_per_card, group_offers, refresh_cards
 from .windows import humanize_remaining, msk_clock
 
 log = logging.getLogger(__name__)
@@ -203,10 +203,10 @@ async def _candidates(query: str) -> list[str]:
         offers, _ = await ctx.topdeck.search_singles([query])
         names: list[str] = []
         for offer in offers:
-            if not offer.eng_name or offer.eng_name in names:
+            if not offer.name or offer.name in names:
                 continue
-            names.append(offer.eng_name)
-            _catalog().add_local_card(offer.eng_name, offer.rus_name)
+            names.append(offer.name)
+            _catalog().add_local_card(offer.name)
         return names[:SUGGEST_LIMIT]
     return []
 
@@ -424,7 +424,7 @@ def _best_per_seller(offers: list[Offer]) -> list[Offer]:
     for offer in offers:
         if offer.cost <= 0:
             continue
-        key = (offer.seller_name or offer.source or "", offer.eng_name)
+        key = (offer.seller_name or offer.source or "", offer.name or offer.eng_name)
         current = best.get(key)
         if current is None or offer.cost < current.cost:
             best[key] = offer
@@ -576,18 +576,29 @@ async def _live_prices(query: str, user_id: int | None) -> tuple[list[Offer], bo
     offers, truncated = await ctx.topdeck.search_singles([query])
     log.info("price request live", extra={"user_id": user_id, "query": query,
                                           "offers": len(offers), "truncated": truncated})
-    return _best_per_seller(offers), truncated
+    return offers, truncated
 
 
 async def _send_prices(message: Message, query: str, user_id: int | None = None) -> None:
     db = _database()
     card = db.find_card(query)
     if card is None or card.id is None:
-        best, truncated = await _live_prices(query, user_id or message.from_user.id)
-        if not best:
-            await message.answer("Предложений не нашлось")
+        offers, truncated = await _live_prices(query, user_id or message.from_user.id)
+        groups = group_offers(offers)
+        exact = groups.get(normalize(query))
+        if exact is not None:
+            label, matched = exact
+            best = _best_per_seller(matched)
+            await message.answer(_prices_text(label, best, truncated=truncated, stamp=best[0].stamp))
             return
-        await message.answer(_prices_text(query, best, truncated=truncated, stamp=best[0].stamp))
+        cheapest = sorted(cheapest_per_card(offers).values(), key=lambda item: item[1].cost)
+        if not cheapest:
+            await message.answer(f"Предложений по «{query}» не нашлось")
+            return
+        lines = [f"Точного совпадения по «{query}» нет — возможно, вы имели в виду:"]
+        lines += [f"• {label} — от {money(offer.cost)} ₽" for label, offer in cheapest[:SUGGEST_LIMIT]]
+        lines.append("Уточните название: /price <карта>")
+        await message.answer("\n".join(lines))
         return
 
     if not db.price_synced(card.id):

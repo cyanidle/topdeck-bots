@@ -120,6 +120,14 @@ class CandidatesTest(unittest.IsolatedAsyncioTestCase):
         self.bot.ctx.topdeck = FakeTopdeck([make_offer("Lightning Bolt", "Удар Молнии")])
         self.assertEqual(await self.bot._candidates("удар молнии"), ["Lightning Bolt"])
         self.assertEqual(self.bot.ctx.topdeck.calls, 1)
+        self.assertIn("Lightning Bolt", self.catalog.search("lightning"))
+
+    async def test_topdeck_fallback_ignores_the_query_echo(self):
+        self.bot.ctx.scryfall = FakeScryfall(multilingual={}, fuzzy={})
+        self.bot.ctx.topdeck = FakeTopdeck([make_offer("удар молнии", "Удар Молнии", name="Lightning Bolt")])
+        self.assertEqual(await self.bot._candidates("удар молнии"), ["Lightning Bolt"])
+        self.assertIn("Lightning Bolt", self.catalog.search("lightning"))
+        self.assertNotIn("удар", [name.lower() for name in self.catalog.search("lightning")])
 
     async def test_topdeck_not_used_when_scryfall_found_something(self):
         self.bot.ctx.scryfall = FakeScryfall(multilingual={
@@ -286,10 +294,15 @@ class WatchlistInlinePricesTest(unittest.IsolatedAsyncioTestCase):
         self.assertLess(text.index("Bernard"), text.index("Cornelius"))
         self.assertLess(text.index("Cornelius"), text.index("Alphonse"))
 
-    async def test_offer_is_matched_by_russian_name(self):
-        self._use([make_offer("Some English Print", "Тармогойф", seller_name="Rus", cost=650)])
+    async def test_offer_is_matched_by_the_card_name_of_the_listing(self):
+        self._use([make_offer("Тармогойф", seller_name="Rus", cost=650, name="Тармогойф")])
         text = await self.bot._watchlist_view(42)
         self.assertIn("650 ₽ Rus", text)
+
+    async def test_foreign_card_from_a_fuzzy_search_is_not_shown(self):
+        self._use([make_offer("Tarmogoyf", seller_name="Curse", cost=53, name="Curse of Shallow Graves")])
+        text = await self.bot._watchlist_view(42)
+        self.assertNotIn("Curse", text)
 
     async def test_prices_sit_on_their_own_line_between_lots_and_actions(self):
         self._use([make_offer("Tarmogoyf", seller_name="Alphonse", cost=700)])
@@ -680,6 +693,71 @@ class MuteCommandTest(unittest.IsolatedAsyncioTestCase):
         self.db.update_mute(42, int(time.time()) + 3600)
         text, _ = self.bot._settings_view(42)
         self.assertIn("на паузе до", text)
+
+
+@unittest.skipUnless(HAS_AIOGRAM, "aiogram is not installed")
+class LivePricesTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        from topbot import bot as bot_module
+
+        self.bot = bot_module
+        self.db = Database(":memory:")
+        self.db.ensure_user(42, "tester")
+        self.bot.ctx.db = self.db
+        self.topdeck = FakeTopdeck([])
+        self.bot.ctx.topdeck = self.topdeck
+
+    def tearDown(self) -> None:
+        self.bot.ctx.db = None
+        self.bot.ctx.topdeck = None
+        self.db.close()
+
+    def _message(self):
+        class FakeMessage:
+            from_user = type("U", (), {"id": 42, "username": "tester", "first_name": "Tester"})()
+
+            def __init__(self):
+                self.sent: list[str] = []
+
+            async def answer(self, text, **kwargs):
+                self.sent.append(text)
+
+        return FakeMessage()
+
+    async def test_exact_group_is_shown_for_a_card_outside_the_catalogue(self):
+        self.topdeck.offers = [make_offer("Shallow Grave", seller_name="Sol", cost=11550, name="Shallow Grave"),
+                               make_offer("Shallow Grave", seller_name="Curse", cost=53,
+                                          name="Curse of Shallow Graves")]
+        message = self._message()
+        await self.bot._send_prices(message, "Shallow Grave")
+        self.assertIn("11\u00a0550 ₽ ×1 — Sol", message.sent[0])
+        self.assertNotIn("Curse", message.sent[0])
+
+    async def test_ambiguous_query_lists_candidates_instead_of_foreign_prices(self):
+        self.topdeck.offers = [make_offer("Eladamri", seller_name="A", cost=197, name="Eladamri's Call"),
+                               make_offer("Eladamri", seller_name="B", cost=600, name="Eladamri, Korvecdal"),
+                               make_offer("Eladamri", seller_name="C", cost=180, name="Eladamri, Lord of Leaves")]
+        message = self._message()
+        await self.bot._send_prices(message, "Eladamri")
+        text = message.sent[0]
+        self.assertIn("Точного совпадения по «Eladamri» нет", text)
+        self.assertIn("• Eladamri, Lord of Leaves — от 180 ₽", text)
+        self.assertIn("• Eladamri's Call — от 197 ₽", text)
+        self.assertIn("• Eladamri, Korvecdal — от 600 ₽", text)
+        self.assertLess(text.index("180 ₽"), text.index("197 ₽"))
+        self.assertLess(text.index("197 ₽"), text.index("600 ₽"))
+
+    async def test_candidate_list_is_capped(self):
+        self.topdeck.offers = [make_offer("x", seller_name=f"S{index}", cost=100 + index,
+                                          name=f"Card {index}") for index in range(8)]
+        message = self._message()
+        await self.bot._send_prices(message, "x")
+        self.assertEqual(message.sent[0].count("• "), self.bot.SUGGEST_LIMIT)
+
+    async def test_empty_answer_says_nothing_found(self):
+        message = self._message()
+        await self.bot._send_prices(message, "Shallow Grave")
+        self.assertIn("Предложений по «Shallow Grave» не нашлось", message.sent[0])
 
 
 @unittest.skipUnless(HAS_AIOGRAM, "aiogram is not installed")

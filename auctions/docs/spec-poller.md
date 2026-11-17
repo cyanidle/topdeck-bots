@@ -72,7 +72,7 @@ t-0ч15м00с   планировщик: r=15м00с → «до конца ~15 м�
 
 1. Берём объединение карт из всех watchlist'ов: `SELECT DISTINCT c.* FROM cards c JOIN watchlist w` (`Database.watched_cards`).
 2. Режем на пачки по 8 карт и на каждую делаем `GET /apps/toptrade/singles/search?q=<имена через \n>` (троттлинг клиента 1.5 с между запросами).
-3. Ответ матчим к картам по `normalize(eng_name)`, фолбэк — по `rus_name` (`prices.match_cards`); офферы с `cost <= 0` отбрасываем.
+3. Ответ матчим к картам по `normalize(name)` — это поле содержит карту из строки продавца, а `eng_name`/`rus_name` в ответе TOPDeck — лишь канонизированный запрос (`prices.match_cards`); офферы с `cost <= 0` и без `name` отбрасываем. Без этого нечёткий ответ («Shallow Grave» → «Curse of Shallow Graves») приклеивает чужие карты к нашей.
 4. На карту — `save_card_offers`: дедуп по продавцу (остаётся самый дешёвый), строки в `card_offers`, отметка «опрошено» в `card_price_sync` (в т.ч. когда предложений нет — иначе карта будет считаться несобранной).
 5. Кэш чистится от карт, которых больше нет ни в одном watchlist'е (`prune_card_offers`).
 6. `poll_runs(kind='prices', items=число карт, duration_ms, ok)`.

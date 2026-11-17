@@ -51,7 +51,7 @@ OFFER_TOPDECK = {
     "seller": {"id": "2049", "name": "Umezawa", "city": "Москва", "refs": "1009"},
     "cost": 100,
     "eng_name": "Tarmogoyf",
-    "name": "Tarmogoyf",
+    "name": "Tarmogoyf Nest",
     "rus_name": "Тармогойф",
 }
 
@@ -111,6 +111,7 @@ class ParseOffersTest(unittest.TestCase):
         self.assertEqual(second.city, "Москва")
         self.assertNotIn("<b", first.line)
         self.assertEqual(first.rus_name, "Тармогойф")
+        self.assertEqual((first.eng_name, first.name), ("Tarmogoyf", "Tarmogoyf Nest"))
         self.assertEqual(second.cost, 371)
 
     def test_cap_constant(self):

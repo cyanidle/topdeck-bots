@@ -14,9 +14,9 @@ from .catalog import CardCatalog
 from .clients.scryfall import ScryfallClient
 from .clients.topdeck import TopdeckClient
 from .messages import render_auction_message, render_offer_line
-from .models import Offer
 from .notifier import Notifier
 from .poller import AuctionPoller
+from .prices import cheapest_per_card
 from .scheduler import WindowScheduler
 
 
@@ -48,13 +48,7 @@ async def cmd_search(settings: Settings, names: list[str]) -> int:
         offers, truncated = await client.search_singles(names)
     finally:
         await session.close()
-    best: dict[str, Offer] = {}
-    for offer in offers:
-        if offer.cost <= 0 or not offer.eng_name:
-            continue
-        current = best.get(offer.eng_name)
-        if current is None or offer.cost < current.cost:
-            best[offer.eng_name] = offer
+    best = {label: offer for label, offer in cheapest_per_card(offers).values()}
     print(f"offers: {len(offers)}, truncated: {truncated}, cards: {len(best)}")
     for name, offer in sorted(best.items(), key=lambda item: item[1].cost):
         print(f"{name:40} {render_offer_line(offer)}  {offer.url}")
