@@ -1018,6 +1018,13 @@ class IgnoreLotButtonTest(unittest.IsolatedAsyncioTestCase):
         await self.bot.cb_skip(callback)
         self.assertEqual(callback.answers, ["Этот лот уже скрыт"])
 
+    def test_notification_buttons_become_inline_keyboard(self):
+        markup = self.bot._buttons_markup([("🚫 Не интересно", "skip:5")])
+        self.assertEqual(len(markup.inline_keyboard), 1)
+        self.assertEqual(markup.inline_keyboard[0][0].text, "🚫 Не интересно")
+        self.assertEqual(markup.inline_keyboard[0][0].callback_data, "skip:5")
+        self.assertIsNone(self.bot._buttons_markup(None))
+
 
 class CallbackAnswerTest(unittest.IsolatedAsyncioTestCase):
     async def test_stale_callback_answer_does_not_break_handler(self):
