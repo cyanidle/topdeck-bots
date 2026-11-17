@@ -9,6 +9,8 @@ NBSP = "\u00a0"
 
 INLINE_OFFERS = 3
 SELLER_LABEL_LIMIT = 18
+NO_OFFERS = "нет предложений"
+NO_PRICE_DATA = "нет данных"
 
 QTY_PREFIX = re.compile(r"^\s*\d+\s*[xхXХ]?\s+")
 PRICE_TOKEN = re.compile(r"\d[\d\s\u00a0]*\s*(?:₽|руб(?:лей|ля|\.)?|rub\.?|р\.|p\.)", re.IGNORECASE)
@@ -75,8 +77,15 @@ def offers_line(offers: list[Offer], limit: int = INLINE_OFFERS) -> str:
     return f"💰 Цены у продавцов: {prices}"
 
 
+def prices_line(offers: list[Offer], known: bool = True) -> str:
+    """Строка цен всегда на месте: пустой кэш — это «нет предложений», а не отсутствие строки."""
+    if offers:
+        return offers_line(offers)
+    return f"💰 Цены у продавцов: {NO_OFFERS if known else NO_PRICE_DATA}"
+
+
 def render_auction_message(lot: Lot, remaining_s: int, card_name: str | None = None,
-                           offers: list[Offer] | None = None) -> str:
+                           offers: list[Offer] | None = None, prices_known: bool = True) -> str:
     bids = lot.bid_count
     lines = [f"⏰ {humanize_remaining(remaining_s)} до конца"]
     lines.append(lot.title)
@@ -86,8 +95,8 @@ def render_auction_message(lot: Lot, remaining_s: int, card_name: str | None = N
     lines.append(f"Текущая ставка: {money(lot.price)} ₽ · {bids} {bid_word}")
     if lot.bin_value > 0:
         lines.append(f"Выкуп: {money(lot.bin_value)} ₽")
-    if offers:
-        lines.append(offers_line(offers))
+    if offers is not None:
+        lines.append(prices_line(offers, prices_known))
     seller_line = f"Продавец: {lot.seller_name or '—'}"
     if lot.seller_city:
         seller_line += f" ({lot.seller_city}"

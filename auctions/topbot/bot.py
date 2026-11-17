@@ -23,7 +23,7 @@ from .clients.scryfall import ScryfallClient
 from .config import Settings
 from .db import Database
 from .matching import normalize
-from .messages import INLINE_OFFERS, money, offers_line, plural, render_offer_line
+from .messages import INLINE_OFFERS, money, plural, prices_line, render_offer_line
 from .models import Card, Offer, WatchlistCard
 from .notifier import Notifier
 from .poller import ensure_matches
@@ -445,13 +445,11 @@ def _lots_line(card: WatchlistCard) -> str:
     return " · ".join(parts)
 
 
-def _card_line(card: WatchlistCard, offers: list[Offer]) -> str:
+def _card_line(card: WatchlistCard, offers: list[Offer], prices_known: bool = True) -> str:
     name = escape(card.name_en, quote=False)
     if card.next_lot_id:
         name = f'<a href="{lot_url(card.next_lot_id)}">{name}</a>'
-    lines = [f"<b>{name}</b>", _lots_line(card)]
-    if offers:
-        lines.append(escape(offers_line(offers), quote=False))
+    lines = [f"<b>{name}</b>", _lots_line(card), escape(prices_line(offers, prices_known), quote=False)]
     actions = " · ".join([
         f'<a href="{_start_link(f"price_{card.card_id}")}">цены</a>',
         f'<a href="{_start_link(f"rm_{card.card_id}")}">удалить</a>',
@@ -488,16 +486,19 @@ async def _watchlist_view(user_id: int) -> str:
                  for card in cards if card.card_id in missing]
         prices_failed = not await _refresh_cards_on_demand(user_id, batch)
     offers = db.top_offers_by_card(card_ids, INLINE_OFFERS)
+    unknown_prices = set(missing) if prices_failed else set()
     with_lots = sum(1 for card in cards if card.lots_count)
     header = (f"📋 <b>Watchlist</b>: {len(cards)} {plural(len(cards), 'карта', 'карты', 'карт')} · "
               f"с лотами: {with_lots}")
-    if prices_failed:
+    if unknown_prices:
         header += "\n⚠️ цены у продавцов сейчас недоступны — ссылка «цены» повторит запрос"
     else:
         synced_at = db.prices_synced_at(card_ids)
         if synced_at is not None:
             header += f"\n💰 Прайсы из кэша: {humanize_remaining(max(0, int(time.time()) - synced_at))} назад"
-    return header + "\n\n" + "\n\n".join(_card_line(card, offers.get(card.card_id, [])) for card in cards)
+    lines = [_card_line(card, offers.get(card.card_id, []), card.card_id not in unknown_prices)
+             for card in cards]
+    return header + "\n\n" + "\n\n".join(lines)
 
 
 async def _send_card_prices(message: Message, user_id: int, card_id: int) -> bool:

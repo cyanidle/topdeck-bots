@@ -21,6 +21,7 @@ async def dispatch_lot_windows(db: Database, notifier: Notifier, lot: Lot,
         return 0
     methods = db.lot_card_methods(lot.id)
     offers_by_card = None
+    prices_known: dict[int, bool] = {}
     remaining = lot.end_ts - now
     sent = 0
     for card_id in watched:
@@ -35,8 +36,11 @@ async def dispatch_lot_windows(db: Database, notifier: Notifier, lot: Lot,
                 continue
             if offers_by_card is None:
                 offers_by_card = db.top_offers_by_card(watched, INLINE_OFFERS)
+                unsynced = set(db.cards_without_prices(watched))
+                prices_known = {card_id: card_id not in unsynced for card_id in watched}
             text = render_auction_message(lot, remaining, card_name=card_name,
-                                          offers=offers_by_card.get(card_id, []))
+                                          offers=offers_by_card.get(card_id, []),
+                                          prices_known=prices_known.get(card_id, True))
             delivered = await notifier.notify(user, "auction_window", lot.id, window, text,
                                               {"lot": lot.id, "card_id": card_id})
             log.info("auction notification", extra={"user_id": user_id, "lot_id": lot.id,

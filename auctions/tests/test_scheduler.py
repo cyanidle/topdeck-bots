@@ -149,10 +149,16 @@ class NotificationPricesTest(SchedulerTestBase):
         self.assertIn("💰 Цены у продавцов: 700 ₽ Alphonse", text)
         self.assertNotIn("900", text)
 
-    async def test_notification_without_cached_prices_has_no_price_line(self):
+    async def test_notification_without_cached_prices_says_there_is_no_data(self):
         self.add_lot(make_lot(3, "Bayou (3ED, №283)", NOW + 3600))
         self.assertEqual(await self.dispatch(NOW), 1)
-        self.assertNotIn("Цены у продавцов", self.notifier.sent[0][1])
+        self.assertIn("💰 Цены у продавцов: нет данных", self.notifier.sent[0][1])
+
+    async def test_notification_with_empty_price_cache_says_there_are_no_offers(self):
+        self.db.save_card_offers(self.card, [], NOW)
+        self.add_lot(make_lot(6, "Bayou (3ED, №283)", NOW + 3600))
+        self.assertEqual(await self.dispatch(NOW), 1)
+        self.assertIn("💰 Цены у продавцов: нет предложений", self.notifier.sent[0][1])
 
     async def test_prices_sit_between_the_bid_and_the_seller(self):
         self.db.save_card_offers(self.card, [make_offer("Bernard", 700)], NOW)
@@ -169,7 +175,7 @@ class NotificationPricesTest(SchedulerTestBase):
         self.db.save_card_offers(self.bolt, [make_offer("Bernard", 700, eng_name="Lightning Bolt")], NOW)
         self.add_lot(make_lot(5, "Bayou (3ED, №283)", NOW + 3600))
         self.assertEqual(await self.dispatch(NOW), 1)
-        self.assertNotIn("Цены у продавцов", self.notifier.sent[0][1])
+        self.assertNotIn("Bernard", self.notifier.sent[0][1])
 
 
 class DelayTest(SchedulerTestBase):

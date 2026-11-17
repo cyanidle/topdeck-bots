@@ -197,7 +197,8 @@ class WatchlistViewTest(unittest.IsolatedAsyncioTestCase):
         block = (await self.bot._watchlist_view(42)).split("\n\n")[1].splitlines()
         self.assertEqual(block[0], "<b>Tarmogoyf</b>")
         self.assertEqual(block[1], "лотов нет")
-        self.assertTrue(block[2].startswith("› "), block[2])
+        self.assertEqual(block[2], "💰 Цены у продавцов: нет предложений")
+        self.assertTrue(block[3].startswith("› "), block[3])
 
     async def test_actions_are_text_links(self):
         text = await self.bot._watchlist_view(42)

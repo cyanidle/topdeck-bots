@@ -148,7 +148,15 @@ class AuctionMessageTest(unittest.TestCase):
         self.assertEqual(lines[3], "💰 Цены у продавцов: 700 ₽ Bernard")
         self.assertEqual(lines[4], "Продавец: Red_clix (Краснодар, 93 отз.)")
 
-    def test_no_offers_means_no_price_line(self):
+    def test_no_offers_says_so_explicitly(self):
+        text = render_auction_message(self.lot(), 900, offers=[])
+        self.assertIn("💰 Цены у продавцов: нет предложений", text)
+
+    def test_unsynced_prices_say_there_is_no_data(self):
+        text = render_auction_message(self.lot(), 900, offers=[], prices_known=False)
+        self.assertIn("💰 Цены у продавцов: нет данных", text)
+
+    def test_cli_rendering_without_offers_has_no_price_line(self):
         text = render_auction_message(self.lot(), 900)
         self.assertNotIn("Цены у продавцов", text)
 
