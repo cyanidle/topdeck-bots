@@ -7,6 +7,12 @@
 * **Любую законченную и проверенную работу коммитим и пушим сразу**: `git add -A` → коммит → `git push origin main`. Готовые изменения не оставляем локально «на потом». `git commit --amend`/`rebase`/force-push опубликованных веток — только по прямой просьбе.
 * Перед коммитом прогоняй тесты: `.venv/bin/python -m unittest discover -s tests -t .` (все зелёные) и `git status` — в индекс не должны попасть `.env`, `data/`, `deploy/xray.config.json`, `*.egg-info/`.
 
+## Деплой
+
+* **Закончил работу — на сервере должен крутиться актуальный код.** Прод живёт на `ssh Server` в `~/topdeck-bots` (user-юниты `topbot.service`, `xray.service`, `topbot-backup.timer`), поэтому после пуша: `ssh Server 'cd ~/topdeck-bots && git pull --ff-only && systemctl --user restart topbot.service'`, затем `systemctl --user is-active topbot.service` и `curl -sS http://127.0.0.1:8085/healthz`.
+* Правки схемы/данных (миграции в `Database._migrate`) тоже требуют рестарта: процесс держит старую схему в памяти. Перед рестартом с миграцией — бэкап: `systemctl --user start topbot-backup.service` (копии в `/data/backups/topdeck-bots/`).
+* `/healthz` отвечает не сразу (15–30 с на старт), а изменения в кэше цен видны только после первого прогона `PricePoller` (запускается сразу после старта).
+
 ## Тесты и проверки
 
 * Юнит-тесты — только `unittest` через venv, без pytest-фикстур: `.venv/bin/python -m unittest discover -s tests -t .`
