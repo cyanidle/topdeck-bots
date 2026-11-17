@@ -6,6 +6,7 @@ import time
 from aiohttp import ClientError
 
 from . import matching
+from .composition import CLEAN_VERSION, clean_composition
 from .db import Database
 from .models import PollStats
 
@@ -13,6 +14,7 @@ log = logging.getLogger(__name__)
 
 COMPOSITION_BUDGET = 40
 TRUNCATED_POLL_RATIO = 0.5
+COMPOSITION_CLEAN_KEY = "composition_clean_version"
 FAILURE_ALERT_THRESHOLD = 3
 EMPTY_ALERT_THRESHOLD = 2
 TRUNCATED_ALERT_THRESHOLD = 2
@@ -28,6 +30,7 @@ class AuctionPoller:
     async def poll_once(self) -> PollStats:
         started_at = int(self.clock())
         started_perf = time.perf_counter()
+        self._clean_stored_compositions()
         try:
             lots = await self.client.fetch_auctions()
         except Exception as exc:
@@ -78,10 +81,21 @@ class AuctionPoller:
                                              "compositions": stats.compositions, "ms": duration_ms})
         return stats
 
+    def _clean_stored_compositions(self) -> None:
+        if self.db.meta_int(COMPOSITION_CLEAN_KEY) >= CLEAN_VERSION:
+            return
+        sets = self.db.set_index()
+        if not sets.names:
+            return
+        cleaned = self.db.clean_compositions(sets)
+        self.db.set_meta(COMPOSITION_CLEAN_KEY, str(CLEAN_VERSION))
+        log.info("stored compositions cleaned", extra={"lots": cleaned})
+
     async def _refresh_compositions(self, now: int) -> int:
         pending = self.db.lots_needing_composition(limit=COMPOSITION_BUDGET * 4, now=now)
         if not pending:
             return 0
+        sets = self.db.set_index()
         matched = self.db.lots_with_matches()
         fetched = 0
         for lot_id, title in pending:
@@ -94,7 +108,7 @@ class AuctionPoller:
             except (TimeoutError, OSError, ClientError):
                 log.warning("lot composition fetch failed", extra={"lot_id": lot_id}, exc_info=True)
                 continue
-            self.db.save_composition(lot_id, detail.composition, now)
+            self.db.save_composition(lot_id, clean_composition(detail.composition, title, sets), now)
             fetched += 1
         log.info("lot compositions refreshed", extra={"fetched": fetched, "pending": len(pending)})
         return fetched

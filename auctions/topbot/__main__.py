@@ -83,6 +83,12 @@ async def _catalog_sync(catalog: CardCatalog) -> None:
     except Exception:
         logger.exception("catalog refresh failed")
     try:
+        sets = await catalog.refresh_sets()
+        if sets:
+            logger.info("set catalog refreshed", extra={"sets": sets})
+    except Exception:
+        logger.exception("set catalog refresh failed")
+    try:
         filled = await catalog.fill_russian_names()
         if filled:
             logger.info("russian names filled", extra={"cards": filled})

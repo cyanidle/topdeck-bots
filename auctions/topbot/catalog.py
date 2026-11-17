@@ -4,11 +4,13 @@ import json
 import logging
 import time
 
+from .db import SETS_SYNCED_KEY
 from .matching import normalize
 
 log = logging.getLogger(__name__)
 
 CATALOG_TTL_S = 7 * 86400
+SETS_TTL_S = 30 * 86400
 META_KEY = "card_names_synced_at"
 NO_RU_KEY = "cards_without_ru"
 
@@ -71,6 +73,21 @@ class CardCatalog:
             return 0
         names = await self.scryfall.card_names()
         return self.store_names(names)
+
+    def sets_count(self) -> int:
+        return int(self.db.conn.execute("SELECT COUNT(*) AS n FROM sets").fetchone()["n"])
+
+    def sets_are_stale(self, now: int | None = None) -> bool:
+        now = int(time.time()) if now is None else now
+        return self.sets_count() == 0 or now - self.db.meta_int(SETS_SYNCED_KEY) > SETS_TTL_S
+
+    async def refresh_sets(self, force: bool = False) -> int:
+        if self.scryfall is None:
+            raise RuntimeError("scryfall client is required to refresh the catalog")
+        if not force and not self.sets_are_stale():
+            return 0
+        rows = await self.scryfall.card_sets()
+        return self.db.save_sets(rows)
 
     async def fill_russian_names(self) -> int:
         if self.scryfall is None:

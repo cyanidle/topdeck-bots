@@ -142,6 +142,17 @@ class ParseCompositionTest(unittest.TestCase):
     def test_page_without_description_has_no_composition(self):
         self.assertEqual(parse_lot_composition("<html><body>нет описания</body></html>"), ())
 
+    def test_set_name_inside_brackets_is_not_a_card(self):
+        html = ('<div class="tt-item-desc"><p><a class="topdeck_tooltipCard" href="/apps/cards/Goblin%20Cadets">'
+                'Goblin Cadets</a> (<a class="topdeck_tooltipCard" href="/apps/cards/Urza%27s%20Saga">'
+                'Urza&#39;s Saga</a>, #189)</p></div>')
+        self.assertEqual(parse_lot_composition(html), ("Goblin Cadets",))
+
+    def test_urls_and_prose_are_not_composition(self):
+        html = ('<div class="tt-item-desc"><p>https://scryfall.com/card/2x2/10/emiel-the-blessed</p>'
+                '<p>Состояние NM/EX</p><p>Bayou</p></div>')
+        self.assertEqual(parse_lot_composition(html), ("Bayou",))
+
 
 class ParseFinishedTest(unittest.TestCase):
     def test_table_row(self):

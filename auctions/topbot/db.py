@@ -8,11 +8,13 @@ import sqlite3
 import time
 from typing import Iterable, Sequence
 
+from .composition import SetIndex, clean_composition
 from .config import RETIRED_WINDOWS
 from .matching import MATCH_VERSION, normalize
 from .models import Card, Counts, Lot, Offer, PollRun, User, WatchlistCard, WatchlistItem
 
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "schema.sql")
+SETS_SYNCED_KEY = "sets_synced_at"
 
 log = logging.getLogger(__name__)
 
@@ -300,6 +302,51 @@ class Database:
             [(lot_id, name, normalize(name)) for name in names if name.strip()],
         )
         self.conn.execute("UPDATE lots SET composition_ts=?, matched_hash=NULL WHERE id=?", (now, lot_id))
+
+    def clean_compositions(self, sets: SetIndex) -> int:
+        rows = self.conn.execute(
+            "SELECT i.lot_id, i.name, l.title FROM lot_items i JOIN lots l ON l.id = i.lot_id"
+        ).fetchall()
+        titles = {int(row["lot_id"]): row["title"] for row in rows}
+        names: dict[int, list[str]] = {}
+        for row in rows:
+            names.setdefault(int(row["lot_id"]), []).append(row["name"])
+        changed = 0
+        for lot_id, items in names.items():
+            kept = clean_composition(items, titles[lot_id], sets)
+            if kept == tuple(items):
+                continue
+            changed += 1
+            self.conn.execute("DELETE FROM lot_items WHERE lot_id=?", (lot_id,))
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO lot_items(lot_id, name, name_norm) VALUES(?,?,?)",
+                [(lot_id, name, normalize(name)) for name in kept],
+            )
+            self.conn.execute("UPDATE lots SET matched_hash=NULL WHERE id=?", (lot_id,))
+        return changed
+
+    def save_sets(self, rows: Sequence[tuple[str, str]]) -> int:
+        self.conn.executemany(
+            "INSERT OR REPLACE INTO sets(code, name, name_norm) VALUES(?,?,?)",
+            [(code, name, normalize(name)) for code, name in rows],
+        )
+        self.set_meta(SETS_SYNCED_KEY, str(int(time.time())))
+        return len(rows)
+
+    def set_index(self) -> SetIndex:
+        codes = {row["code"].lower() for row in self.conn.execute("SELECT code FROM sets")}
+        names = {row["name_norm"] for row in self.conn.execute("SELECT name_norm FROM sets")}
+        return SetIndex(names=frozenset(names), codes=frozenset(codes))
+
+    def meta_int(self, key: str) -> int:
+        row = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return int(row["value"]) if row else 0
+
+    def set_meta(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
 
     def compositions(self) -> dict[int, tuple[str, ...]]:
         result: dict[int, list[str]] = {}

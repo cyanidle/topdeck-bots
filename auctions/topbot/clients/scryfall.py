@@ -80,6 +80,13 @@ class ScryfallClient:
         payload = await self._request("GET", "/catalog/card-names")
         return list(payload.get("data", [])) if payload else []
 
+    async def card_sets(self) -> list[tuple[str, str]]:
+        payload = await self._request("GET", "/sets")
+        if not payload:
+            return []
+        return [(item["code"], item["name"]) for item in payload.get("data", [])
+                if item.get("code") and item.get("name")]
+
     async def search(self, query: str, limit: int = 5) -> list[Card]:
         payload = await self._request("GET", "/cards/search", {"q": query, "unique": "cards"})
         if not payload:

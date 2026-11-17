@@ -42,6 +42,12 @@ CREATE TABLE IF NOT EXISTS card_names (
 
 CREATE INDEX IF NOT EXISTS card_names_norm_idx ON card_names(name_norm);
 
+CREATE TABLE IF NOT EXISTS sets (
+    code      TEXT PRIMARY KEY,
+    name      TEXT NOT NULL,
+    name_norm TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS watchlist (
     id              INTEGER PRIMARY KEY,
     user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

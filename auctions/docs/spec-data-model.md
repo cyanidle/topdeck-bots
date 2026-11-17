@@ -33,6 +33,12 @@ CREATE TABLE cards (
 );
 CREATE INDEX cards_norm_idx ON cards(name_norm);
 
+CREATE TABLE sets (                                 -- каталог изданий Scryfall (GET /sets)
+    code      TEXT PRIMARY KEY,                     -- 2X2, KHM, MAR, …
+    name      TEXT NOT NULL,                        -- Double Masters 2022, …
+    name_norm TEXT NOT NULL                         -- normalize(name): фильтр состава лота
+);
+
 -- 3. Watchlist ---------------------------------------------------------------
 CREATE TABLE watchlist (
     id              INTEGER PRIMARY KEY,
@@ -71,7 +77,7 @@ CREATE INDEX lots_end_idx ON lots(end_ts) WHERE state = 'active';
 
 CREATE TABLE lot_items (                             -- состав лота со страницы аукциона
     lot_id    INTEGER NOT NULL REFERENCES lots(id) ON DELETE CASCADE,
-    name      TEXT NOT NULL,                         -- имя как написал продавец
+    name      TEXT NOT NULL,                         -- имя как написал продавец (без мусора и изданий из скобок)
     name_norm TEXT NOT NULL,
     PRIMARY KEY (lot_id, name_norm)
 );

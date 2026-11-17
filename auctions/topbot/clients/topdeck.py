@@ -8,6 +8,7 @@ import time
 import urllib.parse
 from typing import Any, Sequence
 
+from ..composition import METADATA_PARENS, is_junk
 from ..models import FinishedLot, Lot, LotDetail, Offer
 
 log = logging.getLogger(__name__)
@@ -21,6 +22,7 @@ DESCRIPTION_BLOCK = re.compile(r'<div[^>]*class="[^"]*tt-item-desc[^"]*"[^>]*>(.
 PARAGRAPH = re.compile(r"<p[^>]*>(.*?)</p>", re.S)
 CARD_LINK = re.compile(r'<a[^>]*topdeck_tooltipCard[^>]*>(.*?)</a>', re.S)
 SPACES = re.compile(r"\s+")
+LINK_MARK = "\x01"
 
 
 def embedded_records(html: str) -> list[dict[str, Any]]:
@@ -100,11 +102,12 @@ def _clean_name(text: str) -> str:
 
 
 def _paragraph_names(part: str) -> list[str]:
-    links = [_clean_name(match) for match in CARD_LINK.findall(part)]
+    marked = CARD_LINK.sub(lambda match: f"{LINK_MARK}{strip_tags(match.group(1))}{LINK_MARK}", part)
+    text = _clean_name(METADATA_PARENS.sub(" ", strip_tags(marked)))
+    links = [_clean_name(piece) for piece in text.split(LINK_MARK)[1::2]]
     names = [name for name in links if name]
     if names:
         return names
-    text = _clean_name(part)
     if not text or text.endswith(":"):
         return []
     for chunk in re.split(r"\s*//\s*", text):
@@ -122,6 +125,8 @@ def parse_lot_composition(html: str) -> tuple[str, ...]:
     names: list[str] = []
     for part in PARAGRAPH.findall(block.group(1)):
         for name in _paragraph_names(part):
+            if is_junk(name):
+                continue
             key = name.casefold()
             if key in seen:
                 continue
