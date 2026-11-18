@@ -20,12 +20,15 @@ def create_app(settings, db: Database):
     @app.get("/healthz")
     async def healthz():
         last = db.last_poll("auctions")
+        nonempty = db.last_nonempty_poll("auctions")
         prices = db.last_poll("prices")
         now = int(time.time())
+        healthy = last is None or (last.ok and last.items != 0)
         return JSONResponse({
-            "status": "ok" if last is None or last.ok else "degraded",
+            "status": "ok" if healthy else "degraded",
             "lots_active": db.counts().lots_active,
             "last_auction_poll_age_s": None if last is None else now - last.started_at,
+            "last_nonempty_poll_age_s": None if nonempty is None else now - nonempty.started_at,
             "last_price_poll_age_s": None if prices is None else now - prices.started_at,
         })
 

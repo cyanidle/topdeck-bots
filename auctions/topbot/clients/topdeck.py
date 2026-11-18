@@ -17,12 +17,17 @@ BASE = "https://topdeck.ru"
 RETRIES = 2
 RECORD_CAP = 1478
 EMBEDDED_JSON = re.compile(r'JSON\.parse\("((?:[^"\\]|\\.)*)"\)')
+ERROR_PAGE = re.compile(r"<title>\s*Ошибка\s*[—–-]\s*TOPTrade\s*</title>", re.I)
 TAG = re.compile(r"<[^>]+>")
 DESCRIPTION_BLOCK = re.compile(r'<div[^>]*class="[^"]*tt-item-desc[^"]*"[^>]*>(.*?)</div>', re.S)
 PARAGRAPH = re.compile(r"<p[^>]*>(.*?)</p>", re.S)
 CARD_LINK = re.compile(r'<a[^>]*topdeck_tooltipCard[^>]*>(.*?)</a>', re.S)
 SPACES = re.compile(r"\s+")
 LINK_MARK = "\x01"
+
+
+class TopdeckErrorPage(RuntimeError):
+    """Сайт ответил 200 собственной страницей ошибки вместо данных."""
 
 
 def embedded_records(html: str) -> list[dict[str, Any]]:
@@ -185,6 +190,8 @@ class TopdeckClient:
                     response.raise_for_status()
                     text = await response.text()
                     status = response.status
+                    if ERROR_PAGE.search(text):
+                        raise TopdeckErrorPage(f"error page {len(text)} chars")
             except Exception as exc:
                 last_error = exc
                 log.warning("topdeck fetch failed", extra={
@@ -207,6 +214,8 @@ class TopdeckClient:
 
     async def fetch_lot(self, lot_id: int) -> LotDetail:
         html = await self.fetch_text(f"/apps/toptrade/auctions/{lot_id}")
+        if DESCRIPTION_BLOCK.search(html) is None:
+            raise TopdeckErrorPage(f"lot page {lot_id} without description block")
         composition = parse_lot_composition(html)
         log.info("topdeck lot composition", extra={"lot_id": lot_id, "cards": len(composition)})
         return LotDetail(lot_id=lot_id, composition=composition)

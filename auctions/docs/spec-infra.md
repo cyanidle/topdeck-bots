@@ -128,7 +128,7 @@ curl -s --socks5-hostname 127.0.0.1:1080 https://api.telegram.org  -o /dev/null 
 curl -s https://topdeck.ru/apps/toptrade/auctions -o /dev/null -w '%{http_code}\n'                     # ждём 200, напрямую
 ```
 
-`./deploy/vpn.sh status` печатает результат обеих проверок; `/healthz` бота отдаёт `degraded`, если последний опрос аукционов упал.
+`./deploy/vpn.sh status` печатает результат обеих проверок; `/healthz` бота отдаёт `degraded`, если последний опрос аукционов упал или вернул `0` лотов.
 
 ## 6. Запуск
 

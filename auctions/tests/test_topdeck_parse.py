@@ -219,6 +219,24 @@ class FetchRetryTest(unittest.IsolatedAsyncioTestCase):
             await client.fetch_text("/x", retries=1)
         self.assertEqual(session.calls, 2)
 
+    async def test_site_error_page_is_a_failure(self):
+        from topbot.clients.topdeck import TopdeckClient, TopdeckErrorPage
+
+        error_page = "<html><head><title>Ошибка — TOPTrade</title></head><body></body></html>"
+        session = self.Session([self.Response(200, error_page), self.Response(200, error_page)])
+        client = TopdeckClient(session, throttle_s=0)
+        with self.assertRaises(TopdeckErrorPage):
+            await client.fetch_text("/apps/toptrade/auctions", retries=1)
+        self.assertEqual(session.calls, 2)
+
+    async def test_lot_page_without_description_is_a_failure(self):
+        from topbot.clients.topdeck import TopdeckClient, TopdeckErrorPage
+
+        session = self.Session([self.Response(200, "<html><body>нет описания</body></html>")])
+        client = TopdeckClient(session, throttle_s=0)
+        with self.assertRaises(TopdeckErrorPage):
+            await client.fetch_lot(550678)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1138,6 +1138,15 @@ class StatusCommandTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Лотов активно", sent[0])
         self.assertIn("Последний опрос", sent[0])
 
+    async def test_status_shows_when_the_feed_was_last_non_empty(self):
+        self.bot.ctx.admin_ids = (1,)
+        self.db.record_poll("auctions", int(time.time()) - 120, 100, True, 438)
+        self.db.record_poll("auctions", int(time.time()) - 60, 100, True, 0)
+        sent: list[str] = []
+        await self.bot.cmd_status(self._message(1, sent))
+        self.assertIn("0 лотов", sent[0])
+        self.assertIn("Последняя непустая выдача: 2 мин назад", sent[0])
+
     def test_status_is_not_published_in_commands(self):
         self.assertNotIn("status", [command.command for command in self.bot.COMMANDS])
 

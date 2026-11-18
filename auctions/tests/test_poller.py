@@ -7,6 +7,7 @@ import tempfile
 import time
 import unittest
 
+from topbot.clients.topdeck import TopdeckErrorPage
 from topbot.db import WINDOWS_MIGRATION_KEY, Database, title_hash
 from topbot.matching import MATCH_VERSION
 from topbot.models import Lot, LotDetail, PollStats
@@ -47,9 +48,11 @@ def matched_cards(db: Database, lot_id: int) -> list[int]:
 
 
 class FakeClient:
-    def __init__(self, lots: list[Lot], compositions: dict[int, tuple[str, ...]] | None = None):
+    def __init__(self, lots: list[Lot], compositions: dict[int, tuple[str, ...]] | None = None,
+                 lot_errors: dict[int, Exception] | None = None):
         self.lots = lots
         self.compositions = compositions or {}
+        self.lot_errors = lot_errors or {}
         self.lot_fetches: list[int] = []
 
     async def fetch_auctions(self) -> list[Lot]:
@@ -57,6 +60,9 @@ class FakeClient:
 
     async def fetch_lot(self, lot_id: int) -> LotDetail:
         self.lot_fetches.append(lot_id)
+        error = self.lot_errors.get(lot_id)
+        if error is not None:
+            raise error
         return LotDetail(lot_id=lot_id, composition=self.compositions.get(lot_id, ()))
 
 
@@ -110,6 +116,16 @@ class PollerTest(unittest.IsolatedAsyncioTestCase):
         poller = AuctionPoller(self.db, FakeClient(lots, {22: ("Bayou",)}), clock=lambda: NOW)
         await poller.poll_once()
         self.assertEqual(poller.client.lot_fetches, [])
+
+    async def test_error_page_does_not_store_an_empty_composition(self):
+        lots = [lot(23, "Полноформатные земли ZNR", NOW + 600)]
+        client = FakeClient(lots, lot_errors={23: TopdeckErrorPage("error page 5226 chars")})
+        poller = AuctionPoller(self.db, client, clock=lambda: NOW)
+        await poller.poll_once()
+        self.assertEqual(poller.client.lot_fetches, [23])
+        self.assertEqual(self.db.compositions(), {})
+        self.assertEqual(self.db.lots_needing_composition(limit=5, now=NOW),
+                         [(23, "Полноформатные земли ZNR")])
 
     async def test_russian_title_matches(self):
         lots = [lot(4, "Фойл Тармогойф (FUT, 153, RU, NM)", NOW + 600)]
@@ -235,6 +251,15 @@ class DatabaseTest(unittest.TestCase):
 
     def test_title_hash_changes_with_title(self):
         self.assertNotEqual(title_hash("A"), title_hash("B"))
+
+    def test_last_nonempty_poll_skips_empty_and_failed_runs(self):
+        self.db.record_poll("auctions", 100, 10, True, 0)
+        self.db.record_poll("auctions", 200, 10, False, 0)
+        self.db.record_poll("auctions", 300, 10, True, 42)
+        self.db.record_poll("auctions", 400, 10, True, 0)
+        self.assertEqual(self.db.last_poll("auctions").started_at, 400)
+        self.assertEqual(self.db.last_nonempty_poll("auctions").started_at, 300)
+        self.assertIsNone(self.db.last_nonempty_poll("prices"))
 
 
 class WatchlistCountsTest(unittest.TestCase):
@@ -528,6 +553,17 @@ class AdminAlerterTest(unittest.IsolatedAsyncioTestCase):
         await self.alerter.on_success(PollStats(lots=400))
         await self.alerter.on_success(PollStats(lots=0))
         self.assertEqual(self.sent, [])
+
+    async def test_recovery_after_empty_alert_is_reported_once(self):
+        for _ in range(EMPTY_ALERT_THRESHOLD):
+            await self.alerter.on_success(PollStats(lots=0))
+        self.assertEqual(len(self.sent), 1)
+        await self.alerter.on_success(PollStats(lots=438))
+        self.assertEqual(len(self.sent), 2)
+        self.assertIn("снова возвращают лоты", self.sent[1][1])
+        self.assertIn("438", self.sent[1][1])
+        await self.alerter.on_success(PollStats(lots=438))
+        self.assertEqual(len(self.sent), 2)
 
     async def test_two_truncated_polls_alert_once(self):
         await self.alerter.on_success(PollStats(lots=400))

@@ -37,6 +37,18 @@ def offer_from_row(row: sqlite3.Row) -> Offer:
                  stamp=row["stamp"])
 
 
+def _poll_run(row: sqlite3.Row) -> PollRun:
+    return PollRun(
+        id=int(row["id"]),
+        kind=row["kind"],
+        started_at=int(row["started_at"]),
+        duration_ms=row["duration_ms"],
+        ok=bool(row["ok"]),
+        items=row["items"],
+        error=row["error"],
+    )
+
+
 class Database:
     def __init__(self, path: str):
         self.path = path
@@ -472,17 +484,13 @@ class Database:
         row = self.conn.execute(
             "SELECT * FROM poll_runs WHERE kind=? ORDER BY id DESC LIMIT 1", (kind,)
         ).fetchone()
-        if row is None:
-            return None
-        return PollRun(
-            id=int(row["id"]),
-            kind=row["kind"],
-            started_at=int(row["started_at"]),
-            duration_ms=row["duration_ms"],
-            ok=bool(row["ok"]),
-            items=row["items"],
-            error=row["error"],
-        )
+        return None if row is None else _poll_run(row)
+
+    def last_nonempty_poll(self, kind: str) -> PollRun | None:
+        row = self.conn.execute(
+            "SELECT * FROM poll_runs WHERE kind=? AND ok=1 AND items > 0 ORDER BY id DESC LIMIT 1", (kind,)
+        ).fetchone()
+        return None if row is None else _poll_run(row)
 
     def watched_lot_ids(self, now: int) -> list[int]:
         rows = self.conn.execute(

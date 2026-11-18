@@ -6,6 +6,7 @@ import time
 from aiohttp import ClientError
 
 from . import matching
+from .clients.topdeck import TopdeckErrorPage
 from .composition import CLEAN_VERSION, clean_composition
 from .db import Database
 from .models import PollStats
@@ -143,7 +144,7 @@ class AuctionPoller:
                 continue
             try:
                 detail = await self.client.fetch_lot(lot_id)
-            except (TimeoutError, OSError, ClientError):
+            except (TimeoutError, OSError, ClientError, TopdeckErrorPage):
                 log.warning("lot composition fetch failed", extra={"lot_id": lot_id}, exc_info=True)
                 continue
             self.db.save_composition(lot_id, clean_composition(detail.composition, title, sets,
@@ -172,6 +173,7 @@ class AdminAlerter:
         self.empty_streak = 0
         self.truncated_streak = 0
         self.alerted = False
+        self.empty_alerted = False
         self.alerted_at: dict[str, int] = {}
 
     def recipients(self) -> list[int]:
@@ -201,6 +203,8 @@ class AdminAlerter:
                 await self.sender(user_id, text)
             except Exception:
                 log.exception("admin alert failed", extra={"user_id": user_id})
+                continue
+            log.info("admin alert sent", extra={"user_id": user_id, "text": text[:80]})
 
     async def on_failure(self, error: str) -> None:
         self.failures += 1
@@ -216,7 +220,11 @@ class AdminAlerter:
         if recovered:
             await self._send("topbot: опрос аукционов восстановился.")
         self.empty_streak = self.empty_streak + 1 if stats.lots == 0 else 0
+        if self.empty_streak == 0 and self.empty_alerted:
+            self.empty_alerted = False
+            await self._send(f"topbot: опросы аукционов снова возвращают лоты ({stats.lots}).")
         if self.empty_streak == self.empty_threshold and self._cooldown_passed("empty"):
+            self.empty_alerted = True
             await self._send(f"topbot: {self.empty_streak} опроса подряд вернули 0 лотов — похоже, сайт изменил "
                              f"вёрстку или недоступен.")
         self.truncated_streak = self.truncated_streak + 1 if stats.truncated else 0
