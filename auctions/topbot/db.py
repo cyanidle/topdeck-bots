@@ -66,6 +66,8 @@ class Database:
         columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(lots)")}
         if "composition_ts" not in columns:
             self.conn.execute("ALTER TABLE lots ADD COLUMN composition_ts INTEGER")
+        if "composition_failures" not in columns:
+            self.conn.execute("ALTER TABLE lots ADD COLUMN composition_failures INTEGER NOT NULL DEFAULT 0")
         watchlist_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(watchlist)")}
         if "price_threshold" in watchlist_columns:
             self.conn.execute("ALTER TABLE watchlist DROP COLUMN price_threshold")
@@ -329,16 +331,21 @@ class Database:
         cur = self.conn.execute("UPDATE lots SET matched_hash=NULL WHERE matched_hash IS NOT NULL")
         return cur.rowcount
 
-    def lots_needing_composition(self, limit: int, now: int) -> list[tuple[int, str]]:
+    def lots_needing_composition(self, limit: int, now: int, max_failures: int) -> list[tuple[int, str]]:
         rows = self.conn.execute(
             "SELECT id, title FROM lots WHERE state='active' AND end_ts > ? AND composition_ts IS NULL"
-            " ORDER BY end_ts LIMIT ?",
-            (now, limit),
+            " AND composition_failures < ? ORDER BY end_ts LIMIT ?",
+            (now, max_failures, limit),
         ).fetchall()
         return [(int(row["id"]), row["title"]) for row in rows]
 
     def lots_with_matches(self) -> set[int]:
         return {int(row["lot_id"]) for row in self.conn.execute("SELECT DISTINCT lot_id FROM lot_cards")}
+
+    def note_composition_failure(self, lot_id: int) -> int:
+        self.conn.execute("UPDATE lots SET composition_failures=composition_failures+1 WHERE id=?", (lot_id,))
+        row = self.conn.execute("SELECT composition_failures FROM lots WHERE id=?", (lot_id,)).fetchone()
+        return 0 if row is None else int(row["composition_failures"])
 
     def save_composition(self, lot_id: int, names: Sequence[str], now: int) -> None:
         self.conn.execute("DELETE FROM lot_items WHERE lot_id=?", (lot_id,))
@@ -346,7 +353,8 @@ class Database:
             "INSERT OR REPLACE INTO lot_items(lot_id, name, name_norm) VALUES(?,?,?)",
             [(lot_id, name, normalize(name)) for name in names if name.strip()],
         )
-        self.conn.execute("UPDATE lots SET composition_ts=?, matched_hash=NULL WHERE id=?", (now, lot_id))
+        self.conn.execute("UPDATE lots SET composition_ts=?, composition_failures=0, matched_hash=NULL WHERE id=?",
+                          (now, lot_id))
 
     def clean_compositions(self, sets: SetIndex, card_names: frozenset[str] = frozenset()) -> int:
         rows = self.conn.execute(

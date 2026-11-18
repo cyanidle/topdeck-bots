@@ -11,8 +11,9 @@ from topbot.clients.topdeck import TopdeckErrorPage
 from topbot.db import WINDOWS_MIGRATION_KEY, Database, title_hash
 from topbot.matching import MATCH_VERSION
 from topbot.models import Lot, LotDetail, PollStats
-from topbot.poller import (ADMIN_ALERT_COOLDOWN_S, EMPTY_ALERT_THRESHOLD, FAILURE_ALERT_THRESHOLD,
-                           AdminAlerter, AuctionPoller, ensure_matches)
+from topbot.poller import (ADMIN_ALERT_COOLDOWN_S, COMPOSITION_INTERVAL_S, COMPOSITION_MAX_FAILURES,
+                           EMPTY_ALERT_THRESHOLD, FAILURE_ALERT_THRESHOLD, AdminAlerter, AuctionPoller,
+                           ensure_matches)
 
 NOW = 1_795_400_000
 
@@ -124,8 +125,18 @@ class PollerTest(unittest.IsolatedAsyncioTestCase):
         await poller.poll_once()
         self.assertEqual(poller.client.lot_fetches, [23])
         self.assertEqual(self.db.compositions(), {})
-        self.assertEqual(self.db.lots_needing_composition(limit=5, now=NOW),
+        self.assertEqual(self.db.lots_needing_composition(limit=5, now=NOW, max_failures=COMPOSITION_MAX_FAILURES),
                          [(23, "Полноформатные земли ZNR")])
+
+    async def test_broken_lot_page_is_retried_only_a_few_times(self):
+        clock = [NOW]
+        lots = [lot(24, "Полноформатные земли ZNR", NOW + 3600)]
+        client = FakeClient(lots, lot_errors={24: TopdeckErrorPage("lot page without description block")})
+        poller = AuctionPoller(self.db, client, clock=lambda: clock[0])
+        for _ in range(COMPOSITION_MAX_FAILURES + 2):
+            await poller.poll_once()
+            clock[0] += COMPOSITION_INTERVAL_S
+        self.assertEqual(len(poller.client.lot_fetches), COMPOSITION_MAX_FAILURES)
 
     async def test_russian_title_matches(self):
         lots = [lot(4, "Фойл Тармогойф (FUT, 153, RU, NM)", NOW + 600)]
@@ -376,10 +387,18 @@ class CompositionStorageTest(unittest.TestCase):
 
     def test_pending_lots_shrink_after_fetch(self):
         self.db.upsert_lot(make_lot(1, "Полноформатные земли", NOW + 3600), NOW)
-        self.assertEqual(self.db.lots_needing_composition(limit=5, now=NOW), [(1, "Полноформатные земли")])
+        self.assertEqual(self.db.lots_needing_composition(limit=5, now=NOW, max_failures=3),
+                         [(1, "Полноформатные земли")])
         self.db.save_composition(1, ["Bayou", "Blightstep Pathway"], NOW)
         self.assertEqual(self.db.compositions(), {1: ("Bayou", "Blightstep Pathway")})
-        self.assertEqual(self.db.lots_needing_composition(limit=5, now=NOW), [])
+        self.assertEqual(self.db.lots_needing_composition(limit=5, now=NOW, max_failures=3), [])
+
+    def test_failed_fetches_take_a_lot_out_of_the_queue(self):
+        self.db.upsert_lot(make_lot(5, "Полноформатные земли", NOW + 3600), NOW)
+        self.assertEqual([self.db.note_composition_failure(5) for _ in range(3)], [1, 2, 3])
+        self.assertEqual(self.db.lots_needing_composition(limit=5, now=NOW, max_failures=3), [])
+        self.db.save_composition(5, ["Bayou"], NOW)
+        self.assertEqual(self.db.lots_needing_composition(limit=5, now=NOW, max_failures=3), [])
 
     def test_matches_follow_composition(self):
         card = self.db.upsert_card("Bayou", "bayou")
@@ -393,7 +412,7 @@ class CompositionStorageTest(unittest.TestCase):
 
     def test_finished_lots_are_not_pending(self):
         self.db.upsert_lot(make_lot(3, "Полноформатные земли", NOW - 60), NOW)
-        self.assertEqual(self.db.lots_needing_composition(limit=5, now=NOW), [])
+        self.assertEqual(self.db.lots_needing_composition(limit=5, now=NOW, max_failures=3), [])
 
 
 class WatchlistOverviewTest(unittest.TestCase):

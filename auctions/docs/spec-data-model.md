@@ -67,6 +67,7 @@ CREATE TABLE lots (
     shipping_quick  TEXT,
     image_url       TEXT,
     composition_ts  INTEGER,                        -- когда скачали состав лота (NULL = ещё нет)
+    composition_failures INTEGER NOT NULL DEFAULT 0, -- неудачных скачиваний подряд (лимит в поллере)
     state           TEXT NOT NULL DEFAULT 'active', -- active (есть в последнем опросе) | finished
     final_price     INTEGER,
     winner_name     TEXT,

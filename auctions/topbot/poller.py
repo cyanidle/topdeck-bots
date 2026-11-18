@@ -15,6 +15,7 @@ log = logging.getLogger(__name__)
 
 COMPOSITION_BUDGET = 20
 COMPOSITION_INTERVAL_S = 600
+COMPOSITION_MAX_FAILURES = 3
 TRUNCATED_POLL_RATIO = 0.9
 COMPOSITION_CLEAN_KEY = "composition_clean_version"
 POLL_RUNS_TTL_S = 7 * 86400
@@ -131,7 +132,8 @@ class AuctionPoller:
         log.info("stored compositions cleaned", extra={"lots": cleaned})
 
     async def _refresh_compositions(self, now: int) -> int:
-        pending = self.db.lots_needing_composition(limit=COMPOSITION_BUDGET * 4, now=now)
+        pending = self.db.lots_needing_composition(limit=COMPOSITION_BUDGET * 4, now=now,
+                                                   max_failures=COMPOSITION_MAX_FAILURES)
         if not pending:
             return 0
         sets = self.db.set_index()
@@ -145,7 +147,9 @@ class AuctionPoller:
             try:
                 detail = await self.client.fetch_lot(lot_id)
             except (TimeoutError, OSError, ClientError, TopdeckErrorPage):
-                log.warning("lot composition fetch failed", extra={"lot_id": lot_id}, exc_info=True)
+                failures = self.db.note_composition_failure(lot_id)
+                log.warning("lot composition fetch failed", extra={"lot_id": lot_id, "failures": failures},
+                            exc_info=True)
                 continue
             self.db.save_composition(lot_id, clean_composition(detail.composition, title, sets,
                                                                self._card_names()), now)

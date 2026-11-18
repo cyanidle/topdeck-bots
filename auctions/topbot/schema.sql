@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS lots (
     shipping_quick TEXT,
     image_url      TEXT,
     composition_ts INTEGER,
+    composition_failures INTEGER NOT NULL DEFAULT 0,
     state          TEXT NOT NULL DEFAULT 'active',
     final_price    INTEGER,
     winner_name    TEXT,

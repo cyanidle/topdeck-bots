@@ -8,6 +8,21 @@ from .db import Database
 from .windows import humanize_remaining
 
 
+def health_payload(db: Database, now: int | None = None) -> dict:
+    last = db.last_poll("auctions")
+    nonempty = db.last_nonempty_poll("auctions")
+    prices = db.last_poll("prices")
+    now = int(time.time()) if now is None else now
+    healthy = last is None or (last.ok and last.items != 0)
+    return {
+        "status": "ok" if healthy else "degraded",
+        "lots_active": db.counts().lots_active,
+        "last_auction_poll_age_s": None if last is None else now - last.started_at,
+        "last_nonempty_poll_age_s": None if nonempty is None else now - nonempty.started_at,
+        "last_price_poll_age_s": None if prices is None else now - prices.started_at,
+    }
+
+
 def create_app(settings, db: Database):
     try:
         from fastapi import FastAPI
@@ -19,18 +34,7 @@ def create_app(settings, db: Database):
 
     @app.get("/healthz")
     async def healthz():
-        last = db.last_poll("auctions")
-        nonempty = db.last_nonempty_poll("auctions")
-        prices = db.last_poll("prices")
-        now = int(time.time())
-        healthy = last is None or (last.ok and last.items != 0)
-        return JSONResponse({
-            "status": "ok" if healthy else "degraded",
-            "lots_active": db.counts().lots_active,
-            "last_auction_poll_age_s": None if last is None else now - last.started_at,
-            "last_nonempty_poll_age_s": None if nonempty is None else now - nonempty.started_at,
-            "last_price_poll_age_s": None if prices is None else now - prices.started_at,
-        })
+        return JSONResponse(health_payload(db))
 
     @app.get("/api/lots/ending")
     async def ending(within: int = 86400):

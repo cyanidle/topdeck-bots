@@ -669,11 +669,11 @@ async def cmd_status(message: Message) -> None:
         await message.answer(f"Поллер ещё не запускался. Активных лотов: {active}\n{prices}")
         return
     age = int(time.time()) - last.started_at
-    nonempty_age = "нет" if nonempty is None else humanize_remaining(int(time.time()) - nonempty.started_at)
+    nonempty_line = ("Непустой выдачи ещё не было" if nonempty is None else
+                     f"Последняя непустая выдача: {humanize_remaining(int(time.time()) - nonempty.started_at)} назад")
     await message.answer(
         f"Лотов активно: {active}\nПоследний опрос: {humanize_remaining(age)} назад, "
-        f"{last.items} лотов, {'ok' if last.ok else 'ошибка'}\n"
-        f"Последняя непустая выдача: {nonempty_age} назад\n{prices}"
+        f"{last.items} лотов, {'ok' if last.ok else 'ошибка'}\n{nonempty_line}\n{prices}"
     )
 
 
