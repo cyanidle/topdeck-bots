@@ -55,11 +55,15 @@ class Settings:
         raw = load_env_file(env_file)
         raw.update(os.environ if environ is None else environ)
         settings = cls()
-        for name in ("bot_token", "telegram_proxy", "scryfall_proxy", "scryfall_base", "topdeck_base",
+        for name in ("bot_token", "scryfall_base", "topdeck_base",
                      "web_bind", "db_path", "user_agent", "log_level", "log_format", "log_file"):
             key = name.upper()
             if raw.get(key):
                 setattr(settings, name, raw[key])
+        for name in ("telegram_proxy", "scryfall_proxy"):
+            key = name.upper()
+            if key in raw:
+                setattr(settings, name, raw[key].strip())
         if raw.get("ADMIN_TG_IDS"):
             settings.admin_ids = _int_list(raw["ADMIN_TG_IDS"])
         if raw.get("ADMIN_USERNAMES"):

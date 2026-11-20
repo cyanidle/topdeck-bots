@@ -42,7 +42,7 @@ class ScryfallClient:
         for attempt in range(MAX_RETRIES + 1):
             await self._throttle()
             async with self.session.request(method, url, params=params, json=json_body, headers=self.headers,
-                                            proxy=self.proxy) as response:
+                                            proxy=self.proxy or None) as response:
                 if response.status == 404:
                     return None
                 if response.status == 429:

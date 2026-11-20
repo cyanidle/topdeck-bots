@@ -18,9 +18,12 @@ Telegram-бот, который по персональному watchlist'у п�
 ## Быстрый старт бота
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -e '.[bot,web]'   # один раз: bot — aiogram/aiohttp-socks, web — fastapi/uvicorn
-cp .env.example .env                                  # BOT_TOKEN, прокси, админы; chmod 600
+./deploy/setup.sh                                     # один раз: venv, зависимости, data/, .env из шаблона
+$EDITOR .env                                          # BOT_TOKEN; прокси — или пусто (напрямую), или туннель
 ./topbot.sh                                           # запуск на переднем плане
+```
+
+`./deploy/setup.sh` можно запускать повторно: он идемпотентен (создаёт `.venv`, ставит `-e '.[bot,web]'`, каталоги, `.env` при отсутствии) и печатает итоговый конфиг — в том числе режим `telegram: direct`.
 ./topbot.sh vpn refresh                               # если туннель до Telegram отвалился
 ```
 

@@ -153,14 +153,14 @@ cp .env.example .env        # BOT_TOKEN, TD_PROXY_SUB_URL, ADMIN_TG_IDS, chmod 6
 ```bash
 git clone <repo> ~/topdeck-bots                                  # или rsync рабочей копии
 cd ~/topdeck-bots/auctions
-python3 -m venv .venv && .venv/bin/pip install -e '.[bot,web]'   # bot: aiogram+aiohttp-socks, web: fastapi/uvicorn для /healthz
-cp .env.example .env && chmod 600 .env                           # BOT_TOKEN, TD_PROXY_SUB_URL, ADMIN_TG_IDS, WEB_PORT
-mkdir -p ~/vendor && cp /path/to/xray ~/vendor/xray && chmod +x ~/vendor/xray
+./deploy/setup.sh                                                # venv + -e '.[bot,web]' + data/logs + .env из шаблона, идемпотентно
+$EDITOR .env                                                     # BOT_TOKEN, админы, WEB_PORT; прокси пустые = напрямую
+mkdir -p ~/vendor && cp /path/to/xray ~/vendor/xray && chmod +x ~/vendor/xray   # только если нужен туннель
 ./deploy/vpn.sh render                                           # только отрендерить deploy/xray.config.json из подписки, без запуска ядра
-mkdir -p /data/backups/topdeck-bots
-./deploy/systemd/install.sh                                      # юниты в ~/.config/systemd/user, daemon-reload, enable, linger, старт таймера
-./deploy/systemd/install.sh --now                                # то же + перезапуск xray и бота
+./deploy/systemd/install.sh --now                                # юниты + linger + запуск; ставит только то, что есть на хосте
 ```
+
+`install.sh` ставит `topbot.service` всегда, `xray.service` — если находит бинарник Xray (иначе бот ходит напрямую, а зависимость от xray не прописывается), юниты суточного бэкапа — если есть `/data`. Без туннеля в `.env` достаточно `TELEGRAM_PROXY=` и `SCRYFALL_PROXY=` (пустое значение = прямое соединение), `TD_PROXY_SUB_URL` тогда не нужен.
 
 Если в системе нет пакета `python3-venv` (на Ubuntu 24.04+/25.04 `ensurepip` вырезан, а `sudo apt install python3.13-venv` недоступен) — venv собирается без pip, дальше pip бутстрапится официальным скриптом:
 
@@ -199,8 +199,8 @@ systemctl --user start topbot.service
 
 ```
 BOT_TOKEN=...
-TD_PROXY_SUB_URL=...           # подписка (base64 vless/reality/xhttp)
-TELEGRAM_PROXY=socks5://127.0.0.1:1080
+TD_PROXY_SUB_URL=...           # подписка (base64 vless/reality/xhttp); нужна только на хосте с туннелем
+TELEGRAM_PROXY=socks5://127.0.0.1:1080    # пусто = напрямую
 XRAY_SOCKS_PORT=1080
 SCRYFALL_BASE=https://api.scryfall.com
 SCRYFALL_ENABLED=1
