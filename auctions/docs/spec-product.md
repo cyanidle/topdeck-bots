@@ -120,7 +120,7 @@ Bayou — Reserved List (3ED, EN, №283)
 
 ## 8. Нефункциональные требования
 
-* Python 3.12+, aiogram 3.x, SQLite (WAL) локально.
+* Python 3.10+, aiogram 3.x, SQLite (WAL) локально.
 * Один процесс `topbot` = aiogram + поллер (asyncio task) + мини-сервер (uvicorn) на `127.0.0.1:8080` с `/healthz`.
 * Все внешние вызовы — через общий `aiohttp`-сессию с таймаутами, retry/backoff, троттлингом.
 * Логи — структурированные (JSON) в файл `data/logs/bot.jsonl`.

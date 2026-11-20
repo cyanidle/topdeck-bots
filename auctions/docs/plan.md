@@ -14,7 +14,7 @@
 
 ## Этап 0. Каркас репозитория и клиент TOPDeck — ✔ сделано
 
-* `pyproject.toml` (Python 3.12+, `aiogram`, `fastapi`, `uvicorn`, `aiohttp`, `jinja2`).
+* `pyproject.toml` (Python 3.10+, `aiogram`, `fastapi`, `uvicorn`, `aiohttp`, `jinja2`).
 * Пакет `topbot/`: `config.py`, `db.py` (миграции), `clients/topdeck.py`, `clients/scryfall.py`, `models.py`.
 * `clients/topdeck.py`: fetch+gzip, `embedded_records`, `search_singles` с проверкой усечения 1478, `fetch_auctions`, `fetch_lot` (состав), `finished_search`.
 * Тесты: разбор сохранённых HTML-фикстур (аукционы, поиск, страница лота) — без сети.

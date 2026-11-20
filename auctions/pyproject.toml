@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "topbot"
 version = "0.1.0"
 description = "TOPDeck.ru watchlist bot: auction ending notifications and card prices"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 dependencies = [
     "aiohttp>=3.9",
 ]
