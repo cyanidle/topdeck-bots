@@ -18,7 +18,7 @@ Telegram-бот, который по персональному watchlist'у п�
 ## Быстрый старт бота
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -e .   # один раз
+python3 -m venv .venv && .venv/bin/pip install -e '.[bot,web]'   # один раз: bot — aiogram/aiohttp-socks, web — fastapi/uvicorn
 cp .env.example .env                                  # BOT_TOKEN, прокси, админы; chmod 600
 ./topbot.sh                                           # запуск на переднем плане
 ./topbot.sh vpn refresh                               # если туннель до Telegram отвалился
