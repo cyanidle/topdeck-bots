@@ -221,5 +221,18 @@ BACKUP_INTERVAL_S=3600         # часовой снимок рядом с БД;
 1. Код: `git clone <repo> ~/topdeck-bots` (или rsync рабочей копии) — бот лежит в `~/topdeck-bots/auctions`, пути в юнитах (`%h/topdeck-bots/...`) уже рассчитаны на это.
 2. Окружение: `cd ~/topdeck-bots/auctions && python3 -m venv .venv && .venv/bin/pip install -e '.[bot,web]'` (Python 3.10+, см. §6).
 3. Секреты и данные, которых нет в git: `.env` (§7, `chmod 600`), бинарник Xray в `~/vendor/xray` + конфиг из подписки (`./deploy/vpn.sh render`), текущая БД (на старом хосте взять `data/topbot.sqlite3.hourly` и положить как `data/topbot.sqlite3`; `-wal`/`-shm` не переносить), по желанию — каталог `/data/backups/topdeck-bots`.
-4. Автозапуск: `./deploy/systemd/install.sh --now` — ставит `xray.service`, `topbot.service`, `topbot-backup.service` и `topbot-backup.timer`, включает linger и сразу поднимает туннель и бота.
-5. Проверка: `systemctl --user is-active topbot xray`, `curl -sS 127.0.0.1:$WEB_PORT/healthz`, через час — `ls -la data/topbot.sqlite3.hourly` (§6).
+4. Автозапуск: `./deploy/systemd/install.sh --now` — ставит `xray.service` (только если найден бинарник Xray), `topbot.service`, юниты суточного бэкапа (только при наличии `/data`), включает linger и сразу поднимает бота.
+5. Проверка: `systemctl --user is-active topbot`, `curl -sS 127.0.0.1:$WEB_PORT/healthz`, через час — `ls -la data/topbot.sqlite3.hourly` (§6).
+
+## 9. Бэкап с боевого хоста на отдельный хост
+
+Боевой хост публикует снимок сам (§6), забирает его бэкап-хост:
+
+```bash
+./deploy/systemd/install-pull.sh root@147.45.45.218 --now
+#   ~/.config/topdeck-pull.env: REMOTE=root@147.45.45.218
+#   таймер topdeck-pull.timer: каждый час в :05 → deploy/pull_backup.sh
+REMOTE=root@147.45.45.218 DEST=/data/backups/topdeck-bots/remote KEEP=48 ./deploy/pull_backup.sh   # вручную
+```
+
+`pull_backup.sh` тянет только `data/topbot.sqlite3.hourly` (готовый консистентный снимок; сырые `topbot.sqlite3*` с `-wal` копировать нельзя), проверяет копию `PRAGMA integrity_check`, кладёт её атомарно под именем `topbot-YYYYmmdd-HHMMSS.sqlite3` с правами `600` и держит `KEEP` последних. scp повторяется до 5 раз — канал до боевого хоста нестабильный.

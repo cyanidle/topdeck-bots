@@ -54,7 +54,7 @@ python3 tools/topdeck_probe.py auctions --hours 24 --limit 10               # а
 
 ```
 docs/       спецификации (исследование API, продукт, поллер, БД, инфраструктура, план)
-deploy/     VPN-ядро: xray_from_sub.py (конфиг из подписки), vpn.sh
+deploy/     установка и прокси: setup.sh (venv+зависимости), pull_backup.sh (снимок БД с боевого хоста), systemd/ (юниты, install.sh, install-pull.sh), vpn.sh + xray_from_sub.py
 tools/      topdeck_probe.py — референсный клиент публичных эндпоинтов TOPDeck
 topbot/     бот и поллеры: models.py (dataclass-DTO), clients/, db.py, poller.py, prices.py, bot.py, webui.py
 tests/      unittest'ы (парсинг, матчинг, окна, поллеры, кэш цен, бот-флоу, клиенты, логи)

@@ -1,0 +1,11 @@
+[Unit]
+Description=Снимок БД topbot с боевого хоста (scp + integrity_check)
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/topdeck-pull.env
+ExecStart=%h/topdeck-bots/auctions/deploy/pull_backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=900
