@@ -8,40 +8,18 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
 import sqlite3
 import sys
 import time
 from pathlib import Path
+
+from topbot.backup import copy_database
 
 NAME_FORMAT = "%Y%m%d-%H%M%S"
 
 
 def backup_name(db_path: Path, stamp: float) -> str:
     return f"{db_path.stem}-{time.strftime(NAME_FORMAT, time.localtime(stamp))}.sqlite3"
-
-
-def copy_database(db_path: Path, target: Path) -> None:
-    partial = target.with_name(target.name + ".part")
-    partial.unlink(missing_ok=True)
-    source = sqlite3.connect(db_path, timeout=30)
-    try:
-        copy = sqlite3.connect(partial)
-        try:
-            source.backup(copy)
-        finally:
-            copy.close()
-    finally:
-        source.close()
-    check = sqlite3.connect(partial)
-    try:
-        verdict = check.execute("PRAGMA integrity_check").fetchone()[0]
-    finally:
-        check.close()
-    if verdict != "ok":
-        partial.unlink(missing_ok=True)
-        raise RuntimeError(f"integrity_check failed on the copy: {verdict}")
-    partial.replace(target)
 
 
 def prune(out_dir: Path, keep: int, prefix: str) -> list[Path]:
@@ -61,7 +39,6 @@ def run_backup(db_path: Path, out_dir: Path, keep: int, stamp: float | None = No
     out_dir.mkdir(parents=True, exist_ok=True)
     target = out_dir / backup_name(db_path, time.time() if stamp is None else stamp)
     copy_database(db_path, target)
-    os.chmod(target, 0o600)
     return target, prune(out_dir, keep, db_path.stem)
 
 

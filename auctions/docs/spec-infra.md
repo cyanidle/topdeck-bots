@@ -175,6 +175,7 @@ curl -sS -o /tmp/get-pip.py https://bootstrap.pypa.io/get-pip.py && .venv/bin/py
 * `xray.service` — `Type=simple`, `%h/vendor/xray run -c %h/topdeck-bots/auctions/deploy/xray.config.json`, `After=`/`Wants=network-online.target`, `Restart=on-failure`, `RestartSec=5`. Конфиг в git не хранится (`.gitignore`), поэтому на чистом хосте его надо отрендерить заранее (`vpn.sh render` или `vpn.sh refresh`) либо положить готовый файл. Под systemd не запускать ещё и `./deploy/vpn.sh up`: `vpn.sh` демонизирует ядро сам и пишет `data/xray.pid`, из-за чего два процесса подерутся за порты 1080/1081; `vpn.sh status`/`logs` при этом остаются рабочими, но pid-файла нет, поэтому `status` покажет `xray: stopped` (SOCKS-проверку Telegram он всё равно делает).
 * `topbot.service` — `Type=simple`, `WorkingDirectory=%h/topdeck-bots/auctions`, `ExecStart=…/topbot.sh` (скрипт делает `exec python -m topbot`), `After=`/`Wants=xray.service`, `Restart=on-failure`, `RestartSec=10`, `KillSignal=SIGTERM`, `TimeoutStopSec=30`. `.env` юнит не читает: его разбирает сам бот (`Settings.from_env`), поэтому токен и прокси живут в одном месте.
 * `topbot-backup.timer` — ежедневно в 04:30 (`Persistent=true`), oneshot `topbot-backup.service` вызывает `tools/backup_db.py --db data/topbot.sqlite3 --out /data/backups/topdeck-bots --keep 5`: hot-backup через `sqlite3.Connection.backup` (работает на живой WAL-базе), `PRAGMA integrity_check` на копии, атомарная замена `.part` → `.sqlite3`, права `0600`, имена `topbot-YYYYmmdd-HHMMSS.sqlite3`, хранятся 5 последних (ротация трогает только файлы этого префикса).
+* Часовой бэкап — в процессе бота (`HourlyBackup`, `BACKUP_INTERVAL_S`; по умолчанию 3600 с, `0` выключает): снимок сразу при старте и далее по границе интервала, тот же hot-backup кладёт его в `data/topbot.sqlite3.hourly` рядом с основной БД — постоянное имя, `0600`, атомарная подмена `.part` → файл. Имя не меняется, поэтому внешний сервер забирает снимок по scp, не разбирая ротацию. Копировать `data/topbot.sqlite3*` напрямую нельзя: часть данных лежит в `-wal`, снимок из двух файлов несогласован.
 
 Проверки и восстановление:
 
@@ -209,12 +210,16 @@ DB_PATH=./data/topbot.sqlite3
 ADMIN_TG_IDS=...
 USER_AGENT="topbot/0.1 (+contact)"   # кавычки обязательны: файл читается и как shell-source
 POLL_INTERVAL_S=60
+PRICES_INTERVAL_S=900
+BACKUP_INTERVAL_S=3600         # часовой снимок рядом с БД; 0 — выключить
 ```
 
 Правила: подписка и токен бота — только в `.env` (600); в логах маскируются; `git grep` перед коммитом; при утечке — перевыпуск токена у @BotFather и смена подписки.
 
 ## 8. Переезд на другой хост
 
-1. `git clone` → `/opt/topbot`, положить бинарник Xray (`./vendor/xray`), затем `./deploy/vpn.sh up`.
-2. `python3 -m venv .venv && .venv/bin/pip install -e .`, заполнить `.env` (см. §7).
-3. Запуск — `./topbot.sh` (см. §6) как `ExecStart` юнита (`Environment=BOT_TOKEN=…` или `.env`), репозиторий юнитов не поставляет.
+1. Код: `git clone <repo> ~/topdeck-bots` (или rsync рабочей копии) — бот лежит в `~/topdeck-bots/auctions`, пути в юнитах (`%h/topdeck-bots/...`) уже рассчитаны на это.
+2. Окружение: `cd ~/topdeck-bots/auctions && python3 -m venv .venv && .venv/bin/pip install -e '.[bot,web]'` (Python 3.10+, см. §6).
+3. Секреты и данные, которых нет в git: `.env` (§7, `chmod 600`), бинарник Xray в `~/vendor/xray` + конфиг из подписки (`./deploy/vpn.sh render`), текущая БД (на старом хосте взять `data/topbot.sqlite3.hourly` и положить как `data/topbot.sqlite3`; `-wal`/`-shm` не переносить), по желанию — каталог `/data/backups/topdeck-bots`.
+4. Автозапуск: `./deploy/systemd/install.sh --now` — ставит `xray.service`, `topbot.service`, `topbot-backup.service` и `topbot-backup.timer`, включает linger и сразу поднимает туннель и бота.
+5. Проверка: `systemctl --user is-active topbot xray`, `curl -sS 127.0.0.1:$WEB_PORT/healthz`, через час — `ls -la data/topbot.sqlite3.hourly` (§6).

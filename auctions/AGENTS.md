@@ -10,7 +10,7 @@
 ## Деплой
 
 * **Закончил работу — на сервере должен крутиться актуальный код.** Прод живёт на `ssh Server` в `~/topdeck-bots` (user-юниты `topbot.service`, `xray.service`, `topbot-backup.timer`), поэтому после пуша: `ssh Server 'cd ~/topdeck-bots && git pull --ff-only && systemctl --user restart topbot.service'`, затем `systemctl --user is-active topbot.service` и `curl -sS http://127.0.0.1:8085/healthz`.
-* Правки схемы/данных (миграции в `Database._migrate`) тоже требуют рестарта: процесс держит старую схему в памяти. Перед рестартом с миграцией — бэкап: `systemctl --user start topbot-backup.service` (копии в `/data/backups/topdeck-bots/`).
+* Правки схемы/данных (миграции в `Database._migrate`) тоже требуют рестарта: процесс держит старую схему в памяти. Перед рестартом с миграцией — бэкап: `systemctl --user start topbot-backup.service` (копии в `/data/backups/topdeck-bots/`). Свежий снимок всегда есть рядом с БД — `data/topbot.sqlite3.hourly` (часовая задача в процессе бота); внешний сервер забирает именно его, а не сырые `data/topbot.sqlite3*` (часть данных в `-wal`).
 * `/healthz` отвечает не сразу (15–30 с на старт), а изменения в кэше цен видны только после первого прогона `PricePoller` (запускается сразу после старта).
 
 ## Тесты и проверки

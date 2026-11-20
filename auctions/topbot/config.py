@@ -43,6 +43,7 @@ class Settings:
     user_agent: str = "topbot/0.1 (+contact)"
     poll_interval_s: int = 60
     prices_interval_s: int = 900
+    backup_interval_s: int = 3600
     windows: tuple[int, ...] = DEFAULT_WINDOWS
     throttle_s: float = 1.5
     log_level: str = "INFO"
@@ -67,7 +68,7 @@ class Settings:
             )
         if raw.get("SCRYFALL_ENABLED"):
             settings.scryfall_enabled = raw["SCRYFALL_ENABLED"] not in ("0", "false", "no")
-        for name in ("web_port", "poll_interval_s", "prices_interval_s"):
+        for name in ("web_port", "poll_interval_s", "prices_interval_s", "backup_interval_s"):
             key = name.upper()
             if raw.get(key):
                 setattr(settings, name, int(raw[key]))

@@ -4,7 +4,9 @@ import asyncio
 import contextlib
 import logging
 import time
+from pathlib import Path
 
+from .backup import HourlyBackup
 from .bot import TelegramSender, build_notifier, create_bot, create_dispatcher, setup_bot_ui
 from .catalog import CardCatalog
 from .logs import setup_logging
@@ -56,6 +58,9 @@ async def main() -> None:
              asyncio.create_task(scheduler.run(), name="windows"),
              asyncio.create_task(_prices_loop(settings, prices), name="prices"),
              asyncio.create_task(_catalog_sync(catalog), name="catalog")]
+    if settings.backup_interval_s > 0:
+        backup = HourlyBackup(Path(settings.db_path), settings.backup_interval_s)
+        tasks.append(asyncio.create_task(backup.run(), name="backup"))
     if settings.web_port:
         tasks.append(asyncio.create_task(serve(settings, db), name="webui"))
 
