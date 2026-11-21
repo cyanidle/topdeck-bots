@@ -31,10 +31,14 @@ cardscan <input.(jpg|png|mp4|mov|...)> [options]
   --reads <file>        пересобрать отчёт из таймлайна reads.txt без OCR
   --phash-index <file>  идентифицировать карты по индексу картинок (см. spec-scryfall-index)
   --build-index <meta.jsonl> <out.tsv>  собрать индекс pHash из кеша Scryfall
-  --lookup <index.tsv> <image>          ранжировать карты индекса для картинки
+  --hash-manifest <in.txt> <out.tsv>    посчитать хеши для списка картинок (для индексатора)
+  --lookup <index.tsv> <image>          ранжировать карты индекса для картинки (pHash + ORB)
   --ocr-bench <meta.jsonl> [--samples n]  сравнить варианты OCR на синтетических строках
   --verbose             подробный лог в stderr
 ```
+
+Индекс ведёт `cards/tools/scryfall_index.py` (SQLite + атомарный экспорт TSV); `--build-index`
+оставлен для разовых прогонов по готовому `meta.jsonl`.
 
 Код возврата: 0 — успех, 1 — ошибка выполнения, 2 — ошибка аргументов.
 

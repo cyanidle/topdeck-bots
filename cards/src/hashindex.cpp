@@ -6,8 +6,11 @@
 #include <fstream>
 #include <sstream>
 
+#include <opencv2/calib3d.hpp>
+#include <opencv2/features2d.hpp>
 #include <opencv2/imgcodecs.hpp>
 
+#include "identity.h"
 #include "phash.h"
 
 namespace cardscan {
@@ -59,10 +62,60 @@ bool HashIndex::load(const std::string &path) {
     if (!std::getline(row, entry.name, '\t')) continue;
     if (!std::getline(row, entry.fullHex, '\t')) continue;
     if (!std::getline(row, entry.artHex, '\t')) continue;
+    if (!std::getline(row, entry.path, '\t')) entry.path.clear();
     if (entry.artHex.empty() || entry.fullHex.empty()) continue;
     entries_.push_back(std::move(entry));
   }
   return !entries_.empty();
+}
+
+ArtVerification HashIndex::verifyArt(const cv::Mat &card, const IndexMatch &match) const {
+  ArtVerification result;
+  if (card.empty() || match.path.empty()) return result;
+  cv::Mat &reference = referenceCache_[match.path];
+  if (reference.empty()) {
+    reference = cv::imread(match.path, cv::IMREAD_COLOR);
+    if (reference.empty()) {
+      if (std::getenv("CARDSCAN_DEBUG_COUNT")) {
+        std::fprintf(stderr, "verify: cannot read reference %s\n", match.path.c_str());
+      }
+      return result;
+    }
+    reference = artRegion(reference);
+  }
+  const cv::Mat query = artRegion(card);
+  if (query.empty() || reference.empty()) return result;
+
+  auto orb = cv::ORB::create(700);
+  std::vector<cv::KeyPoint> queryKeys;
+  std::vector<cv::KeyPoint> referenceKeys;
+  cv::Mat queryDesc;
+  cv::Mat referenceDesc;
+  orb->detectAndCompute(query, cv::noArray(), queryKeys, queryDesc);
+  orb->detectAndCompute(reference, cv::noArray(), referenceKeys, referenceDesc);
+  if (queryDesc.empty() || referenceDesc.empty()) return result;
+
+  cv::BFMatcher matcher(cv::NORM_HAMMING);
+  std::vector<std::vector<cv::DMatch>> knn;
+  matcher.knnMatch(queryDesc, referenceDesc, knn, 2);  std::vector<cv::Point2f> from;
+  std::vector<cv::Point2f> to;
+  for (const auto &pair : knn) {
+    if (pair.size() < 2) continue;
+    if (pair[0].distance >= 0.78f * pair[1].distance) continue;
+    from.push_back(queryKeys[pair[0].queryIdx].pt);
+    to.push_back(referenceKeys[pair[0].trainIdx].pt);
+  }
+  result.goodMatches = static_cast<int>(from.size());
+  if (std::getenv("CARDSCAN_DEBUG_COUNT")) {
+    std::fprintf(stderr, "verify %s:%s keys=%zu/%zu good=%d\n", match.setCode.c_str(),
+                 match.collector.c_str(), queryKeys.size(), referenceKeys.size(),
+                 result.goodMatches);
+  }
+  if (from.size() < 8) return result;
+  cv::Mat inlierMask;
+  cv::findHomography(from, to, cv::RANSAC, 4.0, inlierMask);
+  if (!inlierMask.empty()) result.inliers = cv::countNonZero(inlierMask);
+  return result;
 }
 
 std::vector<IndexMatch> HashIndex::lookup(const std::string &fullHex, const std::string &artHex,
@@ -75,6 +128,7 @@ std::vector<IndexMatch> HashIndex::lookup(const std::string &fullHex, const std:
     m.setCode = entry.setCode;
     m.collector = entry.collector;
     m.name = entry.name;
+    m.path = entry.path;
     m.fullDistance = hashDistance(fullHex, entry.fullHex);
     m.artDistance = hashDistance(artHex, entry.artHex);
     matches.push_back(std::move(m));
@@ -93,6 +147,12 @@ std::vector<IndexMatch> HashIndex::lookupCard(const cv::Mat &card, int topK) con
 }
 
 namespace {
+
+std::string normalizeNumber(const std::string &number) {
+  size_t start = 0;
+  while (start + 1 < number.size() && number[start] == '0') ++start;
+  return number.substr(start);
+}
 
 std::string normalizeName(const std::string &name) {
   std::string out;
@@ -126,6 +186,7 @@ std::vector<IndexMatch> HashIndex::findByName(const std::string &name, int topK)
     m.setCode = entry.setCode;
     m.collector = entry.collector;
     m.name = entry.name;
+    m.path = entry.path;
     m.artDistance = candidate == wanted ? 0 : 1;
     m.fullDistance = 0;
     matches.push_back(std::move(m));
@@ -136,6 +197,24 @@ std::vector<IndexMatch> HashIndex::findByName(const std::string &name, int topK)
   });
   if (topK > 0 && static_cast<int>(matches.size()) > topK) matches.resize(topK);
   return matches;
+}
+
+std::string HashIndex::setWithNumber(const std::string &code, const std::string &number,
+                                     double maxDistance) const {
+  if (number.empty()) return {};
+  const std::string wanted = normalizeNumber(number);
+  std::string best;
+  double bestDistance = maxDistance + 1e-9;
+  for (const auto &entry : entries_) {
+    if (normalizeNumber(entry.collector) != wanted) continue;
+    if (entry.setCode == code) return entry.setCode;
+    const double distance = codeDistance(code, entry.setCode);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = entry.setCode;
+    }
+  }
+  return best;
 }
 
 bool buildHashIndex(const std::string &metaPath, const std::string &outPath) {

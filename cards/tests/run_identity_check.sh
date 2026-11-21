@@ -2,7 +2,7 @@
 # Identity gate for the sample video: the printed collector lines below were read by eye from
 # the video frames (comment = frame number), so a wrong "identified" card fails the check.
 #
-# Needs the pHash index built from the Scryfall cache (cards/tools/scryfall_fetch.py +
+# Needs the image index (cards/tools/scryfall_index.py or scryfall_fetch.py +
 # cardscan --build-index); skipped when it is absent.
 set -euo pipefail
 

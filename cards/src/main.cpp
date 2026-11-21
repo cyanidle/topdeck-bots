@@ -41,6 +41,7 @@ const char *kUsage =
     "  --lookup <index.tsv> <image>           rank index cards for a card image\n"
     "  --phash-index <index.tsv>              identify cards by artwork hash (Scryfall index)\n"
     "  --ocr-bench <meta.jsonl> [--samples n]  rank OCR variants on synthetic collector lines\n"
+    "  --hash-manifest <in.tsv> <out.tsv>   hash every image listed in the manifest\n"
     "  --probe-card <img>    run the collector-line locator + OCR on one card crop and print the read\n"
     "  --compare <a> <b>     print perceptual-hash / colour-signature distance of two images\n"
     "  --verbose             per-track logging to stderr\n"
@@ -99,6 +100,8 @@ int run(int argc, char **argv) {
   std::string lookupIndex;
   std::string lookupImage;
   std::string benchMeta;
+  std::string hashManifestIn;
+  std::string hashManifestOut;
   int benchSamples = 100;
   cardscan::AnalyzerOptions options;
 
@@ -146,6 +149,9 @@ int run(int argc, char **argv) {
         options.phashIndexPath = next("--phash-index");
       } else if (arg == "--ocr-bench") {
         benchMeta = next("--ocr-bench");
+      } else if (arg == "--hash-manifest") {
+        hashManifestIn = next("--hash-manifest");
+        hashManifestOut = next("--hash-manifest");
       } else if (arg == "--samples") {
         benchSamples = std::stoi(next("--samples"));
       } else if (arg == "--compare") {
@@ -218,6 +224,30 @@ int run(int argc, char **argv) {
   if (!benchMeta.empty()) {
     return cardscan::runOcrBenchmark(benchMeta, benchSamples);
   }
+  if (!hashManifestIn.empty()) {
+    std::ifstream manifest(hashManifestIn);
+    if (!manifest) {
+      std::cerr << "cannot read the manifest: " << hashManifestIn << "\n";
+      return 1;
+    }
+    std::ofstream out(hashManifestOut);
+    if (!out) {
+      std::cerr << "cannot write: " << hashManifestOut << "\n";
+      return 1;
+    }
+    std::string path;
+    int done = 0;
+    while (std::getline(manifest, path)) {
+      if (path.empty()) continue;
+      const cv::Mat image = cv::imread(path, cv::IMREAD_COLOR);
+      if (image.empty()) continue;
+      out << path << '\t' << cardscan::perceptualHash(image) << '\t'
+          << cardscan::artHash(image) << '\n';
+      ++done;
+    }
+    std::fprintf(stderr, "hashed: %d\n", done);
+    return 0;
+  }
   if (!indexMeta.empty()) {
     if (!cardscan::buildHashIndex(indexMeta, indexOut)) {
       std::cerr << "cannot build the hash index from " << indexMeta << "\n";
@@ -239,9 +269,11 @@ int run(int argc, char **argv) {
     }
     const std::vector<cardscan::IndexMatch> matches = index.lookupCard(card, 10);
     for (size_t i = 0; i < matches.size(); ++i) {
-      std::printf("%2zu. art=%d full=%d  %s %s  %s\n", i + 1, matches[i].artDistance,
-                  matches[i].fullDistance, matches[i].setCode.c_str(),
-                  matches[i].collector.c_str(), matches[i].name.c_str());
+      const cardscan::ArtVerification verify = index.verifyArt(card, matches[i]);
+      std::printf("%2zu. art=%d full=%d  inliers=%d good=%d  %s %s  %s\n", i + 1,
+                  matches[i].artDistance, matches[i].fullDistance, verify.inliers,
+                  verify.goodMatches, matches[i].setCode.c_str(), matches[i].collector.c_str(),
+                  matches[i].name.c_str());
     }
     return 0;
   }
@@ -290,7 +322,8 @@ int run(int argc, char **argv) {
       if (!r.identity.empty()) ++result.readsWithIdentity;
     }
     result.cards = cardscan::buildCardsFromReads(reads, options, index.empty() ? nullptr : &index);
-    cardscan::consolidateCards(result.cards);    for (const auto &c : result.cards) {
+    cardscan::consolidateCards(result.cards, options);
+    for (const auto &c : result.cards) {
       result.frames = std::max(result.frames, c.lastFrame);
     }
     json = cardscan::videoResultJson(result);

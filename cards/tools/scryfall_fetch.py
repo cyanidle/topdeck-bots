@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -25,12 +26,18 @@ API = "https://api.scryfall.com"
 USER_AGENT = "topdeck-bots-cardscan/0.1"
 
 
-def curl_json(url: str, retries: int = 3) -> dict:
+def curl_args(proxy: str = "") -> list[str]:
+    args = ["curl", "-s", "-m", "25", "--retry", "1", "--retry-delay", "1",
+            "-H", f"User-Agent: {USER_AGENT}"]
+    if proxy:
+        args += ["--proxy", proxy]
+    return args
+
+
+def curl_json(url: str, retries: int = 3, proxy: str = "") -> dict:
     for attempt in range(retries):
-        result = subprocess.run(
-            ["curl", "-s", "-m", "40", "-H", f"User-Agent: {USER_AGENT}",
-             "-H", "Accept: application/json", url],
-            capture_output=True, text=True)
+        result = subprocess.run(curl_args(proxy) + ["-H", "Accept: application/json", url],
+                                capture_output=True, text=True)
         if result.returncode == 0 and result.stdout.strip():
             try:
                 payload = json.loads(result.stdout)
@@ -42,11 +49,26 @@ def curl_json(url: str, retries: int = 3) -> dict:
     return {}
 
 
-def curl_file(url: str, path: Path) -> bool:
+def complete_jpeg(path: Path) -> bool:
+    """Scryfall responses can stall mid-transfer; a cut JPEG still opens in most decoders."""
+    try:
+        with path.open("rb") as handle:
+            handle.seek(-2, os.SEEK_END)
+            return handle.read(2) == b"\xff\xd9"
+    except OSError:
+        return False
+
+
+def curl_file(url: str, path: Path, proxy: str = "", retries: int = 2) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(
-        ["curl", "-s", "-m", "40", "-H", f"User-Agent: {USER_AGENT}", "-o", str(path), url])
-    return result.returncode == 0 and path.is_file() and path.stat().st_size > 512
+    for attempt in range(retries):
+        result = subprocess.run(curl_args(proxy) + ["-H", "Accept: image/jpeg", "-o", str(path),
+                                                   url])
+        if result.returncode == 0 and path.is_file() and path.stat().st_size > 512:
+            if complete_jpeg(path):
+                return True
+        time.sleep(0.5 + attempt)
+    return False
 
 
 def image_url(card: dict, size: str) -> str:
@@ -78,25 +100,37 @@ def load_known(meta_path: Path) -> set[str]:
     return known
 
 
-def fetch_set(code: str, out: Path, delay: float, meta, known: set[str], size: str) -> int:
+def fetch_set(code: str, out: Path, delay: float, meta, known: set[str], size: str,
+              proxy: str = "", force: bool = False) -> tuple[int, int, int]:
+    """Downloads one set; returns (written, failed, seen) so a caller can tell a complete set."""
     url = f"{API}/cards/search?q=e%3A{code}&unique=prints&order=set"
     written = 0
+    failed = 0
+    seen = 0
     seen_pages: set[str] = set()
     while url and url not in seen_pages:
         seen_pages.add(url)
-        payload = curl_json(url)
+        # The API answers one page at a time: a stalled page silently truncates the set, so a
+        # page without a payload is reported as failed instead of ending the set quietly.
+        payload = curl_json(url, proxy=proxy)
+        if not payload.get("data"):
+            print(f"  ! failed page: {url}", file=sys.stderr, flush=True)
+            failed += 1
+            break
         for card in payload.get("data", []):
             card_id = card.get("id", "")
             key = f"{card_id}:{size}"
-            if card_id and key in known:
+            seen += 1
+            if card_id and key in known and not force:
                 continue
             url_small = image_url(card, size)
             if not url_small:
                 continue
             collector = str(card.get("collector_number", ""))
             target = out / "images" / f"{card.get('set', code)}_{safe_name(collector)}.jpg"
-            if not curl_file(url_small, target):
+            if not curl_file(url_small, target, proxy):
                 print(f"  ! failed: {url_small}", file=sys.stderr, flush=True)
+                failed += 1
                 continue
             meta.write(json.dumps({
                 "size": size,
@@ -114,7 +148,7 @@ def fetch_set(code: str, out: Path, delay: float, meta, known: set[str], size: s
                 print(f"  {code}: {written} images", flush=True)
             time.sleep(delay)
         url = payload.get("next_page") or ""
-    return written
+    return written, failed, seen
 
 
 def main() -> int:
@@ -124,6 +158,10 @@ def main() -> int:
     parser.add_argument("--delay", type=float, default=0.08, help="seconds between requests")
     parser.add_argument("--size", default="small", choices=["small", "normal", "large"],
                         help="Scryfall image size to cache")
+    parser.add_argument("--proxy", default="",
+                        help="curl proxy URL, e.g. socks5h://127.0.0.1:1080")
+    parser.add_argument("--force", action="store_true",
+                        help="re-download images that are already cached")
     args = parser.parse_args()
 
     out = Path(args.out)
@@ -136,8 +174,9 @@ def main() -> int:
     with meta_path.open("a", encoding="utf-8") as meta:
         for code in [c.strip().lower() for c in args.sets.split(",") if c.strip()]:
             print(f"set {code} ...", flush=True)
-            count = fetch_set(code, out, args.delay, meta, known, args.size)
-            print(f"set {code}: {count} new images", flush=True)
+            count, failed, seen = fetch_set(code, out, args.delay, meta, known, args.size,
+                                            args.proxy, args.force)
+            print(f"set {code}: {count} new images, {failed} failed, {seen} cards", flush=True)
             total += count
     print(f"done: {total} new images, metadata in {meta_path}", flush=True)
     return 0

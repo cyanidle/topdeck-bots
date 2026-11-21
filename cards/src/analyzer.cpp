@@ -92,7 +92,8 @@ Quad expandQuadSides(const Quad &q, double dx, double dyTop, double dyBottom) {
 
 std::vector<VerifiedCandidate> verifyCandidates(const cv::Mat &frame,
                                                 const std::vector<Detection> &detections,
-                                                const AnalyzerOptions &opt) {
+                                                const AnalyzerOptions &opt,
+                                                int frameIndex = -1) {
   const CardRegions regions = defaultRegions(opt.ocr);
   std::vector<VerifiedCandidate> candidates;
   for (const auto &d : detections) {
@@ -121,8 +122,18 @@ std::vector<VerifiedCandidate> verifyCandidates(const cv::Mat &frame,
     }
     v.quality = qualityOf(v.crop, d, frame.size());
     v.evidence = analyzeCard(v.crop);
-    v.hash = hashCrop(v.crop);
-    v.artHash = artHash(v.crop);
+    // The hash must line up with the reference card image, so it is taken from the detected
+    // quad itself: v.crop carries extra table below the card for the collector line and
+    // shifts the artwork inside the frame.
+    const cv::Mat aligned = warpQuad(frame, d.quad, opt.ocr.cardWidth, opt.ocr.cardHeight);
+    v.hash = hashCrop(aligned);
+    v.artHash = artHash(aligned);
+    if (const char *dumpDir = std::getenv("CARDSCAN_DEBUG_ALIGNED")) {
+      char name[512];
+      std::snprintf(name, sizeof(name), "%s/aligned_f%06d_a%02d.jpg", dumpDir, frameIndex,
+                    static_cast<int>(candidates.size()));
+      cv::imwrite(name, aligned);
+    }
     v.textRuns = countTextRuns(v.crop, regions.collectorBlock);
     const double structural = structuralOf(v.evidence);
     const double structuralBoost = 1.0 + 2.0 * std::min(1.5, structural * 8.0);
@@ -368,11 +379,16 @@ int numericValue(const std::string &s) {
 
 }  // namespace
 
-void consolidateCards(std::vector<CardResult> &cards) {
+void consolidateCards(std::vector<CardResult> &cards, const AnalyzerOptions &opt) {
   struct Cluster {
     CardResult card;
     std::map<std::string, double> codeVotes;
   };
+  std::sort(cards.begin(), cards.end(), [](const CardResult &a, const CardResult &b) {
+    if (a.firstTs != b.firstTs) return a.firstTs < b.firstTs;
+    return a.trackId < b.trackId;
+  });
+
   std::vector<Cluster> clusters;
   for (auto &card : cards) {
     if (!card.identifiedByCodes) {
@@ -381,15 +397,19 @@ void consolidateCards(std::vector<CardResult> &cards) {
       clusters.push_back(c);
       continue;
     }
+    // Only the immediately preceding show can be the same physical card: a repeat of the
+    // same card after a pause (or after another card) is a separate card in the stack.
     Cluster *target = nullptr;
-    for (auto &candidate : clusters) {
-      if (!candidate.card.identifiedByCodes) continue;
+    if (!clusters.empty()) {
+      Cluster &last = clusters.back();
       const int na = numericValue(card.number);
-      const int nb = numericValue(candidate.card.number);
-      if (na <= 0 || nb <= 0 || na != nb) continue;
-      if (codeDistance(card.setCode, candidate.card.setCode) > 2.5) continue;
-      target = &candidate;
-      break;
+      const int nb = numericValue(last.card.number);
+      const double gap = card.firstTs - last.card.lastTs;
+      if (last.card.identifiedByCodes && na > 0 && na == nb &&
+          codeDistance(card.setCode, last.card.setCode) <= 2.5 &&
+          gap <= opt.duplicateMergeGapSeconds) {
+        target = &last;
+      }
     }
     if (!target) {
       Cluster c;
@@ -520,6 +540,30 @@ std::string normalizeCollector(const std::string &collector) {
   return collector.substr(start);
 }
 
+bool acceptsIndexMatch(const std::vector<IndexMatch> &matches, const AnalyzerOptions &opt) {
+  if (matches.empty()) return false;
+  if (matches[0].artDistance > opt.indexMaxDistance) return false;
+  if (matches[0].fullDistance > opt.indexMaxFullDistance) return false;
+  if (matches.size() > 1 &&
+      matches[1].artDistance - matches[0].artDistance < opt.indexMinMargin) {
+    return false;
+  }
+  return true;
+}
+
+// Only a keypoint match proves the two pictures show one card: the hash distances above are
+// too close between the same card under studio light and an unrelated card.
+std::string verifiedIndexIdentity(const HashIndex &index, const cv::Mat &crop,
+                                  const std::string &fullHash, const std::string &artHash,
+                                  const AnalyzerOptions &opt) {
+  if (index.empty() || fullHash.empty()) return {};
+  const std::vector<IndexMatch> matches = index.lookup(fullHash, artHash, 2);
+  if (!acceptsIndexMatch(matches, opt)) return {};
+  const ArtVerification verify = index.verifyArt(crop, matches[0]);
+  if (verify.inliers < opt.indexMinInliers) return {};
+  return matches[0].setCode + ":" + normalizeCollector(matches[0].collector);
+}
+
 // One identity channel (collector line, artwork hash, title) and its strength.
 struct Evidence {
   bool valid = false;
@@ -565,8 +609,10 @@ FusedIdentity fuseEvidence(const Evidence &codes, const Evidence &hash, const Ev
       vote.sources += source;
     }
   };
-  add(codes, 1.0, "codes");
-  add(hash, 1.4, "index");
+  // The collector line is read from a validated number vote, so it outranks the artwork
+  // channels: the picture only confirms it or fills in when the line could not be read.
+  add(codes, 1.6, "codes");
+  add(hash, 1.2, "index");
   add(byName, 0.8, "name");
 
   FusedIdentity out;
@@ -667,30 +713,26 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
     }
   }
 
+  if (std::getenv("CARDSCAN_DEBUG_COUNT")) {
+    for (const auto &segment : segments) {
+      std::fprintf(stderr, "[split %.2f-%.2f] items=%zu\n", segment.items.front()->ts,
+                   segment.items.back()->ts, segment.items.size());
+      for (const auto *item : segment.items) {
+        std::fprintf(stderr, "  read %.2f q=%.2f code=%s num=%s idx=%s\n", item->ts,
+                     item->quality, item->code.c_str(), item->number.c_str(),
+                     item->indexIdentity.c_str());
+      }
+    }
+  }
+
   std::vector<CardResult> cards;
   int nextId = 1;
   for (const auto &segment : segments) {
     if (static_cast<int>(segment.items.size()) < std::max(2, opt.minSegmentReads)) continue;
 
-    // The presented card is the largest one in the frame; readings of a smaller neighbour
-    // card that happens to share the set code must not vote on this card's identity.
-    auto quadArea = [](const std::vector<cv::Point2f> &points) {
-      if (points.size() != 4) return 0.0;
-      Quad q;
-      std::copy(points.begin(), points.end(), q.begin());
-      return polygonArea(q);
-    };
-    double maxArea = 0.0;
-    for (const auto *item : segment.items) maxArea = std::max(maxArea, quadArea(item->quad));
-    auto spatialOk = [&](const ReadSample *item) {
-      if (maxArea <= 0.0 || item->quad.size() != 4) return true;
-      return quadArea(item->quad) >= opt.segmentMinAreaRatio * maxArea;
-    };
-
     std::map<std::string, double> codeVotes;
     const ReadSample *chosen = nullptr;
     for (const auto *item : segment.items) {
-      if (!spatialOk(item)) continue;
       if (!item->code.empty()) codeVotes[item->code] += 0.2 + item->quality;
       if (!chosen || item->quality > chosen->quality) chosen = item;
     }
@@ -703,7 +745,7 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
     std::vector<std::string> numbers;
     std::vector<const ReadSample *> supporters;
     for (const auto *item : segment.items) {
-      if (item->number.empty() || !spatialOk(item)) continue;
+      if (item->number.empty()) continue;
       if (!item->code.empty() && !code.empty() &&
           codeDistance(item->code, code) > opt.segmentNumberCodeTolerance) {
         continue;
@@ -749,6 +791,11 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
         card.setCode = voteSetCode(codeFromNumber, opt.segmentNumberCodeTolerance);
       }
     }
+    if (index && !index->empty() && haveNumber) {
+      const std::string snapped =
+          index->setWithNumber(card.setCode, number, opt.setSnapDistance);
+      if (!snapped.empty()) card.setCode = snapped;
+    }
     const ReadSample *meta = numberSource ? numberSource : chosen;
     card.language = meta ? meta->language : "";
     if (!haveNumber) card.rarity = chosen ? chosen->rarity : "";
@@ -792,21 +839,11 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
     Evidence nameEvidence;
     if (index && !index->empty()) {
       std::map<std::string, int> votes;
-      std::map<std::string, IndexMatch> best;
       std::map<std::string, const ReadSample *> source;
       for (const auto *item : segment.items) {
-        if (item->artHash.empty() || !spatialOk(item)) continue;
-        const std::vector<IndexMatch> matches = index->lookup(item->hash, item->artHash, 2);
-        if (matches.empty() || matches[0].artDistance > opt.indexMaxDistance) continue;
-        if (matches[0].fullDistance > opt.indexMaxFullDistance) continue;
-        if (matches.size() > 1 &&
-            matches[1].artDistance - matches[0].artDistance < opt.indexMinMargin) {
-          continue;
-        }
-        const std::string key =
-            matches[0].setCode + ":" + normalizeCollector(matches[0].collector);
+        if (item->indexIdentity.empty()) continue;
+        const std::string &key = item->indexIdentity;
         ++votes[key];
-        best.emplace(key, matches[0]);
         const ReadSample *&slot = source[key];
         if (!slot || item->quality > slot->quality) slot = item;
       }
@@ -820,13 +857,12 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
       }
       if (bestVotes > 0 && (bestVotes >= opt.indexMinSupport ||
                             (bestVotes == 1 && votes.size() == 1))) {
-        const IndexMatch &match = best[bestKey];
+        const size_t colon = bestKey.find(':');
+        hashEvidence.valid = true;
+        hashEvidence.setCode = bestKey.substr(0, colon);
+        hashEvidence.number = bestKey.substr(colon + 1);
         const double agreement =
             static_cast<double>(bestVotes) / std::max<size_t>(1, segment.items.size());
-        hashEvidence.valid = true;
-        hashEvidence.setCode = match.setCode;
-        hashEvidence.number = normalizeCollector(match.collector);
-        hashEvidence.name = match.name;
         hashEvidence.strength = std::min(1.0, 0.45 + 0.55 * agreement);
         const ReadSample *src = source[bestKey];
         if (src) {
@@ -838,7 +874,7 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
 
       std::map<std::string, int> nameVotes;
       for (const auto *item : segment.items) {
-        if (!item->name.empty() && spatialOk(item)) ++nameVotes[item->name];
+        if (!item->name.empty()) ++nameVotes[item->name];
       }
       std::string segmentName;
       int nameVotes_ = 0;
@@ -1007,7 +1043,7 @@ ImageResult Analyzer::analyzeImage(const std::string &path) {
     c.firstTs = c.bestTs = c.lastTs = 0.0;
     c.quality = v.quality;
     c.quad.assign(v.detection.quad.begin(), v.detection.quad.end());
-    c.hash = hashCrop(crop);
+    c.hash = v.hash;
     fillFromRead(c, s.read);
 
     Evidence codesEvidence;
@@ -1021,18 +1057,12 @@ ImageResult Analyzer::analyzeImage(const std::string &path) {
 
     Evidence hashEvidence;
     if (!index_.empty()) {
-      const std::vector<IndexMatch> matches = index_.lookupCard(crop, 2);
-      if (!matches.empty() && matches[0].artDistance <= opt_.indexMaxDistance &&
-          matches[0].fullDistance <= opt_.indexMaxFullDistance &&
-          (matches.size() < 2 ||
-           matches[1].artDistance - matches[0].artDistance >= opt_.indexMinMargin)) {
+      const std::string verified = verifiedIndexIdentity(index_, crop, v.hash, v.artHash, opt_);
+      if (!verified.empty()) {
         hashEvidence.valid = true;
-        hashEvidence.setCode = matches[0].setCode;
-        hashEvidence.number = normalizeCollector(matches[0].collector);
-        hashEvidence.name = matches[0].name;
-        hashEvidence.strength =
-            1.0 - std::min(1.0, static_cast<double>(matches[0].artDistance) /
-                                   (opt_.indexMaxDistance + 1.0));
+        hashEvidence.setCode = verified.substr(0, verified.find(':'));
+        hashEvidence.number = verified.substr(verified.find(':') + 1);
+        hashEvidence.strength = 0.9;
       }
     }
 
@@ -1139,7 +1169,7 @@ VideoResult Analyzer::analyzeVideo(const std::string &path) {
     const double ts = index / result.fps;
 
     const auto detections = detector.detect(frame);
-    const auto candidates = verifyCandidates(frame, detections, opt_);
+    const auto candidates = verifyCandidates(frame, detections, opt_, index);
     if (opt_.verbose) {
       std::fprintf(stderr, "[frame %d] raw=%zu verified=%zu\n", index, detections.size(),
                    candidates.size());
@@ -1200,8 +1230,15 @@ VideoResult Analyzer::analyzeVideo(const std::string &path) {
 
     if (ocr && ocr->available() && opt_.enableOcr && !candidates.empty() && opt_.ocrStride > 0 &&
         index % opt_.ocrStride == 0) {
-      const VerifiedCandidate &top = candidates.front();
-      if (looksLikeCard(top, opt_)) {
+      // The held-up card is the one that fills the frame; the score ranking also likes a
+      // sharp neighbour card, which used to win the read and identify the wrong card.
+      const VerifiedCandidate *picked = nullptr;
+      for (const auto &candidate : candidates) {
+        if (!looksLikeCard(candidate, opt_)) continue;
+        if (!picked || candidate.detection.area > picked->detection.area) picked = &candidate;
+      }
+      if (picked) {
+        const VerifiedCandidate &top = *picked;
         if (!opt_.debugDir.empty()) {
           char prefix[64];
           std::snprintf(prefix, sizeof(prefix), "cand_f%06d", index);
@@ -1227,6 +1264,13 @@ VideoResult Analyzer::analyzeVideo(const std::string &path) {
             sample.name = ocr->readTitle(top.crop);
           }
           sample.quad.assign(top.detection.quad.begin(), top.detection.quad.end());
+          sample.indexIdentity = verifiedIndexIdentity(index_, top.crop, sample.hash,
+                                                       sample.artHash, opt_);
+          if (const char *dumpDir = std::getenv("CARDSCAN_DEBUG_CROPS")) {
+            char name[512];
+            std::snprintf(name, sizeof(name), "%s/crop_f%06d.jpg", dumpDir, index);
+            cv::imwrite(name, top.crop);
+          }
           if (!sample.identity.empty()) ++result.readsWithIdentity;
           result.reads.push_back(sample);
         }
@@ -1286,7 +1330,7 @@ VideoResult Analyzer::analyzeVideo(const std::string &path) {
 
   result.cards = buildCardsFromReads(result.reads, opt_, index_.empty() ? nullptr : &index_);
   if (result.cards.empty()) result.cards = buildCards(tracker.tracks(), ocr.get(), opt_);
-  consolidateCards(result.cards);
+  consolidateCards(result.cards, opt_);
 
   if (!opt_.debugDir.empty() && opt_.saveTrackCrops) {
     for (const auto &t : tracker.tracks()) {
@@ -1300,11 +1344,11 @@ VideoResult Analyzer::analyzeVideo(const std::string &path) {
   if (!opt_.debugDir.empty() && opt_.saveTrackCrops) {
     std::string dump;
     for (const auto &r : result.reads) {
-      char line[256];
-      std::snprintf(line, sizeof(line), "%.3f f=%d q=%.2f id=%s code=%s num=%s/%s\n", r.ts,
-                    r.frame, r.quality, r.identity.c_str(), r.code.c_str(), r.number.c_str(),
-                    r.total.c_str());
-      dump += line;
+      char line[512];
+      std::snprintf(line, sizeof(line),
+                    "%.3f f=%d q=%.2f id=%s code=%s num=%s/%s h=%s ah=%s\n", r.ts, r.frame,
+                    r.quality, r.identity.c_str(), r.code.c_str(), r.number.c_str(),
+                    r.total.c_str(), r.hash.c_str(), r.artHash.c_str());      dump += line;
     }
     std::ofstream readsOut(opt_.debugDir + "/reads.txt");
     if (readsOut) readsOut << dump;
@@ -1348,6 +1392,8 @@ std::vector<ReadSample> loadReadTimeline(const std::string &path) {
       number.resize(slash);
     }
     sample.number = number;
+    sample.hash = field(line, "h");
+    sample.artHash = field(line, "ah");
     reads.push_back(sample);
   }
   return reads;

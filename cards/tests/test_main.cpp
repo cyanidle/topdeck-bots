@@ -1,11 +1,13 @@
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 #include <string>
 #include <vector>
 
 #include "analyzer.h"
 #include "detector.h"
 #include "geometry.h"
+#include "hashindex.h"
 #include "identity.h"
 #include "tracker.h"
 
@@ -236,12 +238,63 @@ void testCountingFromReads() {
           "counting keeps chronological order");
   }
 
-  cardscan::consolidateCards(cards);
-  check(cards.size() == 2, "consolidation merges the repeated identity");
-  if (cards.size() == 2) {
-    check(cards[0].identity == "DDS:51", "consolidation keeps the identity");
-    check(cards[0].hits == 20, "consolidation sums the hits");
-    check(cards[0].lastTs > cards[0].firstTs, "consolidation spans both shows");
+  cardscan::consolidateCards(cards, opt);
+  check(cards.size() == 3, "consolidation keeps a repeated card that came after another");
+  if (cards.size() == 3) {
+    check(cards[0].identity == "DDS:51" && cards[2].identity == "DDS:51",
+          "the repeat keeps its identity");
+    check(cards[0].hits == 10 && cards[2].hits == 10, "the repeat is not folded into the first");
+  }
+}
+
+cardscan::CardResult makeCard(double firstTs, double lastTs, const std::string &code,
+                              const std::string &number) {
+  cardscan::CardResult c;
+  c.trackId = static_cast<int>(firstTs * 100) + 1;
+  c.setCode = code;
+  c.number = number;
+  c.identity = code + ":" + cardscan::normalizeCollector(number);
+  c.identified = true;
+  c.identifiedByCodes = true;
+  c.confidence = 0.6;
+  c.hits = 5;
+  c.firstTs = firstTs;
+  c.lastTs = lastTs;
+  c.firstFrame = static_cast<int>(firstTs * 30);
+  c.lastFrame = static_cast<int>(lastTs * 30);
+  c.bestTs = firstTs;
+  c.bestFrame = c.firstFrame;
+  c.mergedTrackIds.push_back(c.trackId);
+  return c;
+}
+
+void testDuplicateCards() {
+  const cardscan::AnalyzerOptions opt;
+  {
+    std::vector<cardscan::CardResult> cards = {makeCard(0.0, 1.0, "DDS", "051"),
+                                               makeCard(1.05, 2.0, "DDS", "051")};
+    cardscan::consolidateCards(cards, opt);
+    check(cards.size() == 1, "a contiguous duplicate is one physical card");
+    if (!cards.empty()) check(cards[0].hits == 10, "contiguous duplicate sums the hits");
+  }
+  {
+    std::vector<cardscan::CardResult> cards = {makeCard(0.0, 1.0, "DDS", "051"),
+                                               makeCard(2.5, 3.5, "DDS", "051")};
+    cardscan::consolidateCards(cards, opt);
+    check(cards.size() == 2, "the same card after a pause counts twice");
+  }
+  {
+    std::vector<cardscan::CardResult> cards = {makeCard(0.0, 1.0, "DDS", "051"),
+                                               makeCard(1.1, 2.0, "C18", "150"),
+                                               makeCard(2.1, 3.0, "DDS", "051")};
+    cardscan::consolidateCards(cards, opt);
+    check(cards.size() == 3, "the same card after another card counts twice");
+  }
+  {
+    std::vector<cardscan::CardResult> cards = {makeCard(0.0, 1.0, "DDS", "051"),
+                                               makeCard(1.05, 2.0, "DOS", "051")};
+    cardscan::consolidateCards(cards, opt);
+    check(cards.size() == 1, "a confusable set-code spelling still merges");
   }
 }
 
@@ -255,6 +308,23 @@ void testCountingIgnoresThinSegments() {
   const std::vector<cardscan::CardResult> cards = cardscan::buildCardsFromReads(reads, opt);
   check(cards.size() == 1, "counting drops a segment with too few reads");
   if (!cards.empty()) check(cards[0].identity == "C18:150", "kept segment is the dense one");
+}
+
+void testSetSnapFromIndex() {
+  const std::string path = "/tmp/cardscan_test_index.tsv";
+  {
+    std::ofstream out(path);
+    out << "TMT\t67\tNinja Teen\t89e9763f76eb3677\tddc0fedc3efcfe7e\n";
+    out << "WAR\t149\tRal's Outburst\taabbccddeeff0011\t0011223344556677\n";
+  }
+  cardscan::HashIndex index;
+  check(index.load(path), "a five-column index loads without a reference path");
+  check(index.setWithNumber("TMT", "0067", 2.0) == "TMT", "an exact set code stays");
+  check(index.setWithNumber("TRTT", "0067", 2.0) == "TMT", "a misread code snaps to the set that has the number");
+  check(index.setWithNumber("WAH", "149", 2.0) == "WAR", "one-letter misreads snap");
+  check(index.setWithNumber("DDS", "999", 2.0).empty(), "an unknown number stays unresolved");
+  check(index.setWithNumber("XYZ", "0067", 2.0).empty(), "a far set code is not guessed");
+  std::remove(path.c_str());
 }
 
 }  // namespace
@@ -271,6 +341,8 @@ int main() {
   testSnapSetCode();
   testCountingFromReads();
   testCountingIgnoresThinSegments();
+  testDuplicateCards();
+  testSetSnapFromIndex();
   std::printf("%d checks, %d failures\n", gChecks, gFailures);
   return gFailures == 0 ? 0 : 1;
 }

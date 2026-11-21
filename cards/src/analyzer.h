@@ -40,7 +40,8 @@ struct AnalyzerOptions {
   int segmentIncompatibleRun = 3;
   int minNumberSupport = 2;
   double minNumberAgreement = 0.25;
-  double segmentMinAreaRatio = 0.60;
+  double setSnapDistance = 2.0;
+  double duplicateMergeGapSeconds = 0.30;
   double maxSegmentSeconds = 2.5;
   double ocrMinQuality = 0.25;
   double nestedIou = 0.60;
@@ -48,10 +49,14 @@ struct AnalyzerOptions {
   int hashMergeDistance = 16;
   double hashMergeGapSeconds = 0.5;
   std::string phashIndexPath;
-  int indexMaxDistance = 26;
-  int indexMaxFullDistance = 28;
-  int indexMinMargin = 2;
+  // The artwork hash only narrows the search: the same card photographed at an angle sits
+  // about as far from its reference image as an unrelated card does, so a match is accepted
+  // only after an actual keypoint match (indexMinInliers) against the reference artwork.
+  int indexMaxDistance = 16;
+  int indexMaxFullDistance = 22;
+  int indexMinMargin = 3;
   int indexMinSupport = 2;
+  int indexMinInliers = 12;
   std::string debugDir;
   std::string overlayPath;
   int debugFrameEvery = 30;
@@ -128,7 +133,7 @@ std::string normalizeCollector(const std::string &collector);
 std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads,
                                             const AnalyzerOptions &opt,
                                             const HashIndex *index = nullptr);
-void consolidateCards(std::vector<CardResult> &cards);
+void consolidateCards(std::vector<CardResult> &cards, const AnalyzerOptions &opt);
 std::vector<ReadSample> loadReadTimeline(const std::string &path);
 
 }

@@ -61,3 +61,8 @@ if [[ -x "$here/run_identity_check.sh" ]]; then
   CARDSCAN_BIN="$bin" \
   CARDSCAN_SAMPLE_VIDEO="$video" "$here/run_identity_check.sh"
 fi
+
+if [[ -x "$here/run_duplicate_check.sh" ]]; then
+  CARDSCAN_BIN="$bin" \
+  CARDSCAN_SAMPLE_VIDEO="$video" "$here/run_duplicate_check.sh"
+fi

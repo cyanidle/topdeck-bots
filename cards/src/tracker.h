@@ -29,6 +29,7 @@ struct ReadSample {
   std::string name;
   std::string hash;
   std::string artHash;
+  std::string indexIdentity;  // verified by an artwork keypoint match against the index
   std::vector<cv::Point2f> quad;
 };
 
