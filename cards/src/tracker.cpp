@@ -54,9 +54,9 @@ int Tracker::match(int frame, const Detection &d, const std::string &hash) const
   return -1;
 }
 
-int Tracker::update(int frame, double ts, const Detection &d, const std::string &hash) {
-  const int matched = match(frame, d, hash);
-  if (matched < 0) {
+int Tracker::update(int frame, double ts, const Detection &d, const std::string &hash,
+                    int matchedId) {
+  if (matchedId <= 0) {
     Track t;
     t.id = nextId_++;
     t.firstFrame = frame;
@@ -70,7 +70,7 @@ int Tracker::update(int frame, double ts, const Detection &d, const std::string 
     return t.id;
   }
 
-  Track *t = get(matched);
+  Track *t = get(matchedId);
   if (t) {
     if (frame != t->lastFrame) ++t->hits;
     t->lastFrame = frame;
@@ -79,7 +79,7 @@ int Tracker::update(int frame, double ts, const Detection &d, const std::string 
     t->lastHash = hash;
     t->misses = 0;
   }
-  return matched;
+  return matchedId;
 }
 
 void Tracker::endFrame(int frame) {

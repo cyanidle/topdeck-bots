@@ -9,9 +9,6 @@
 
 #include <ctre.hpp>
 
-#define CARDSCAN_LANG_PATTERN \
-  "EN|RU|DE|FR|IT|ES|PT|JA|JP|KO|KR|ZH|ZHS|ZHT|CN|TW|SP|PL|NL|CS|SK|HU|TR|HE"
-
 namespace cardscan {
 namespace {
 
@@ -69,7 +66,8 @@ std::string normalizeOcrText(const std::string &s) {
   return collapseSpaces(ascii);
 }
 
-int scoreRead(const OcrRead &r) {  int score = 0;
+int scoreRead(const OcrRead &r) {
+  int score = 0;
   if (r.hasCollector()) {
     score += 4;
     try {

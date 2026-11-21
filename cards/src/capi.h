@@ -17,6 +17,7 @@ const char *cardscan_version(void);
  *   "min_track_hits" <int>     frames a track must survive (default 4)
  *   "ocr_stride"     <int>     run OCR every Nth video frame (default 2)
  *   "max_frames"     <int>     stop after N frames, 0 = all (default 0)
+ *   "stride"         <int>     process every Nth video frame (default 1)
  *   "debug_dir"      <path>    dump annotated frames and crops
  *   "overlay"        <path>    write an annotated video/overlay image
  * Returns 0 on success, -1 for an unknown key or bad value. */

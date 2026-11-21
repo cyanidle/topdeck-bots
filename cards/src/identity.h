@@ -6,11 +6,11 @@
 namespace cardscan {
 
 struct OcrRead {
-  std::string number;    // "051"
-  std::string total;     // "065"
-  std::string setCode;   // "DDS"
-  std::string language;  // "EN"
-  std::string rarity;    // "C"
+  std::string number;
+  std::string total;
+  std::string setCode;
+  std::string language;
+  std::string rarity;
   std::string name;      // title fallback, Latin only for now
   std::string raw;       // exact text the read came from
   int regionId = -1;     // 0 = collector block, 1 = collector line, 2 = set line, 3 = title

@@ -48,6 +48,8 @@ struct Track {
   int bestTextRuns = 0;
   double bestStructural = 0.0;
   cv::Mat bestCrop;
+  std::string bestHash;
+  bool cropDropped = false;
 
   std::string lastHash;
   std::vector<TrackRead> reads;
@@ -73,7 +75,10 @@ class Tracker {
   explicit Tracker(Params p) : p_(p) {}
 
   int match(int frame, const Detection &d, const std::string &hash) const;
-  int update(int frame, double ts, const Detection &d, const std::string &hash);
+  int update(int frame, double ts, const Detection &d, const std::string &hash, int matchedId);
+  int update(int frame, double ts, const Detection &d, const std::string &hash) {
+    return update(frame, ts, d, hash, match(frame, d, hash));
+  }
   void endFrame(int frame);
 
   Track *get(int id);

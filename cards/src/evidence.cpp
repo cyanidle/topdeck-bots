@@ -5,8 +5,6 @@
 
 #include <opencv2/imgproc.hpp>
 
-#include "text_runs.h"
-
 namespace cardscan {
 namespace {
 
@@ -33,7 +31,8 @@ double bandMean(const cv::Mat &gray, double inset, double thickness) {
 
 }  // namespace
 
-CardEvidence analyzeCard(const cv::Mat &crop) {  CardEvidence evidence;
+CardEvidence analyzeCard(const cv::Mat &crop) {
+  CardEvidence evidence;
   if (crop.empty()) return evidence;
   cv::Mat gray;
   if (crop.channels() == 3) {

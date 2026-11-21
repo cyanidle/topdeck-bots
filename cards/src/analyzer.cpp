@@ -180,7 +180,7 @@ CardResult resolveTrack(const Track &t, const AnalyzerOptions &) {
   c.bestTs = t.bestTs;
   c.quality = t.bestQuality;
   c.quad.assign(t.bestQuad.begin(), t.bestQuad.end());
-  c.hash = hashCrop(t.bestCrop);
+  c.hash = t.bestHash;
   c.mergedTrackIds.push_back(t.id);
 
   std::map<std::string, std::pair<int, double>> votes;
@@ -348,6 +348,8 @@ int numericValue(const std::string &s) {
   }
 }
 
+}  // namespace
+
 void consolidateCards(std::vector<CardResult> &cards) {
   struct Cluster {
     CardResult card;
@@ -498,16 +500,17 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
     if (!startNew) {
       Segment &current = segments.back();
       const double gap = sample->ts - current.items.back()->ts;
-      if (gap > 0.6 || sample->ts - current.items.front()->ts > opt.maxSegmentSeconds) {
+      if (gap > opt.segmentGapSeconds ||
+          sample->ts - current.items.front()->ts > opt.maxSegmentSeconds) {
         startNew = true;
       } else {
         const std::string majority = majorityCode(current);
         const bool incompatible =
             !majority.empty() && !sample->code.empty() &&
-            codeDistance(majority, sample->code) > 2.5;
+            codeDistance(majority, sample->code) > opt.segmentCodeDistance;
         if (incompatible) {
           ++current.incompatibleRun;
-          if (current.incompatibleRun >= 3) startNew = true;
+          if (current.incompatibleRun >= opt.segmentIncompatibleRun) startNew = true;
         } else {
           current.incompatibleRun = 0;
         }
@@ -579,7 +582,18 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
   return cards;
 }
 
-}  // namespace
+bool hasImageExtension(const std::string &path) {
+  const size_t dot = path.find_last_of('.');
+  if (dot == std::string::npos) return false;
+  std::string ext = path.substr(dot + 1);
+  std::transform(ext.begin(), ext.end(), ext.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  static const char *kImages[] = {"jpg", "jpeg", "png", "bmp", "webp", "tif", "tiff"};
+  for (const char *e : kImages) {
+    if (ext == e) return true;
+  }
+  return false;
+}
 
 Analyzer::Analyzer(const AnalyzerOptions &options) : opt_(options) {}
 
@@ -667,7 +681,8 @@ ImageResult Analyzer::analyzeImage(const std::string &path) {
     if (!evidence) continue;
     bool nested = false;
     for (const auto &q : accepted) {
-      if (quadIoU(v.detection.quad, q) > 0.60 || quadContainment(v.detection.quad, q) > 0.85) {
+      if (quadIoU(v.detection.quad, q) > opt_.nestedIou ||
+          quadContainment(v.detection.quad, q) > opt_.nestedContainment) {
         nested = true;
         break;
       }
@@ -777,9 +792,9 @@ VideoResult Analyzer::analyzeVideo(const std::string &path) {
       int trackId = tracker.match(index, d, v.hash);
       if (trackId < 0) {
         if (!looksLikeCard(v, opt_)) continue;
-        trackId = tracker.update(index, ts, d, v.hash);
+        trackId = tracker.update(index, ts, d, v.hash, 0);
       } else {
-        tracker.update(index, ts, d, v.hash);
+        tracker.update(index, ts, d, v.hash, trackId);
       }
       Track *track = tracker.get(trackId);
       if (!track) continue;
@@ -791,7 +806,8 @@ VideoResult Analyzer::analyzeVideo(const std::string &path) {
       if (structural > track->bestStructural) track->bestStructural = structural;
       if (v.quality > track->bestQuality) {
         track->bestQuality = v.quality;
-        track->bestCrop = crop.clone();
+        track->bestHash = hashCrop(crop);
+        if (!track->cropDropped) track->bestCrop = crop.clone();
         track->bestQuad = d.quad;
         track->bestFrame = index;
         track->bestTs = ts;
@@ -813,6 +829,12 @@ VideoResult Analyzer::analyzeVideo(const std::string &path) {
           const OcrRead read = ocr->readCard(crop);
           if (!read.raw.empty()) track->reads.push_back({index, ts, v.quality, read});
         }
+      }
+
+      if (!track->cropDropped && !track->bestCrop.empty() && opt_.debugDir.empty() &&
+          hasStrongIdentity(*track)) {
+        track->bestCrop.release();
+        track->cropDropped = true;
       }
     }
     tracker.endFrame(index);
@@ -845,7 +867,6 @@ VideoResult Analyzer::analyzeVideo(const std::string &path) {
 
     if (writer.isOpened()) {
       cv::Mat canvas = frame.clone();
-      std::vector<char> drawn(tracker.tracks().size(), 0);
       for (const auto &entry : assigned) {
         const VerifiedCandidate &v = *entry.second;
         Track *best = tracker.get(entry.first);

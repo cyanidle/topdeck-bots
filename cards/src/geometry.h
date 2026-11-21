@@ -24,6 +24,5 @@ cv::Rect quadBoundingRect(const Quad &q, cv::Size clampTo);
 bool allCornersInside(const Quad &q, cv::Size size, float margin);
 cv::Mat warpQuad(const cv::Mat &src, const Quad &quad, int outWidth, int outHeight,
                  int interpolation = cv::INTER_CUBIC);
-cv::Mat warpQuadMax(const cv::Mat &src, const Quad &quad, int outWidth, int outHeight);
 
 }  // namespace cardscan

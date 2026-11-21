@@ -152,6 +152,110 @@ void testTrackerGap() {
   check(later != id, "tracker starts a new track after a long gap");
 }
 
+cardscan::ReadSample makeReadSample(int frame, double ts, const std::string &code,
+                                    const std::string &number, const std::string &total,
+                                    double quality = 0.5) {
+  cardscan::ReadSample s;
+  s.frame = frame;
+  s.ts = ts;
+  s.quality = quality;
+  s.code = code;
+  s.number = number;
+  s.total = total;
+  if (!code.empty() && !number.empty()) s.identity = code + ":" + number;
+  return s;
+}
+
+void testVoteDigits() {
+  check(cardscan::voteDigits({"051", "051", "O51"}) == "051", "voteDigits per-position majority");
+  check(cardscan::voteDigits({"051", "051", "65"}) == "051", "voteDigits picks the majority length");
+  check(cardscan::voteDigits({}).empty(), "voteDigits of nothing is empty");
+  check(cardscan::voteDigits({"1234567"}).empty(), "voteDigits rejects absurdly long input");
+}
+
+void testMergeReads() {
+  cardscan::OcrRead number;
+  number.number = "051";
+  number.total = "065";
+  number.rarity = "C";
+  number.regionId = 1;
+  number.score = 9;
+
+  cardscan::OcrRead set;
+  set.setCode = "DDS";
+  set.language = "EN";
+  set.regionId = 2;
+  set.score = 8;
+
+  cardscan::OcrRead noise;
+  noise.number = "861";
+  noise.total = "065";
+  noise.regionId = 0;
+  noise.score = 12;
+
+  const cardscan::OcrRead merged = cardscan::mergeReads({noise, number, set});
+  check(merged.number == "051" && merged.total == "065", "mergeReads prefers the collector region");
+  check(merged.setCode == "DDS" && merged.language == "EN", "mergeReads takes set + language");
+  check(merged.identityKey() == "DDS:051", "mergeReads builds an identity");
+}
+
+void testSnapSetCode() {
+  const std::vector<std::string> known = {"DDS", "C18", "AKH"};
+  check(cardscan::snapSetCode("DOS", known) == "DDS", "snapSetCode repairs a confusable code");
+  check(cardscan::snapSetCode("C18", known) == "C18", "snapSetCode keeps an exact code");
+  check(cardscan::snapSetCode("ZZZ", known) == "ZZZ", "snapSetCode keeps an unknown code");
+  check(cardscan::snapSetCode("DDS", {}) == "DDS", "snapSetCode without a vocabulary");
+}
+
+std::vector<cardscan::ReadSample> countingTimeline() {
+  std::vector<cardscan::ReadSample> reads;
+  for (int i = 0; i < 10; ++i) {
+    reads.push_back(makeReadSample(i, i * 0.1, i == 4 ? "DOS" : "DDS", "051", "065"));
+  }
+  for (int i = 0; i < 10; ++i) {
+    reads.push_back(makeReadSample(40 + i, 4.0 + i * 0.1, "C18", "150", "307"));
+  }
+  for (int i = 0; i < 10; ++i) {
+    reads.push_back(makeReadSample(80 + i, 8.0 + i * 0.1, "DDS", "051", "065"));
+  }
+  return reads;
+}
+
+void testCountingFromReads() {
+  const cardscan::AnalyzerOptions opt;
+  const std::vector<cardscan::ReadSample> reads = countingTimeline();
+  std::vector<cardscan::CardResult> cards = cardscan::buildCardsFromReads(reads, opt);
+  check(cards.size() == 3, "counting splits on the pause and keeps the shows apart");
+  if (cards.size() == 3) {
+    check(cards[0].identity == "DDS:051", "counting votes the majority set code");
+    check(cards[0].number == "051" && cards[0].total == "065", "counting votes the number");
+    check(cards[1].identity == "C18:150", "counting follows the set change");
+    check(cards[2].identity == "DDS:051", "counting sees the repeated card again");
+    check(cards[0].firstTs < cards[1].firstTs && cards[1].firstTs < cards[2].firstTs,
+          "counting keeps chronological order");
+  }
+
+  cardscan::consolidateCards(cards);
+  check(cards.size() == 2, "consolidation merges the repeated identity");
+  if (cards.size() == 2) {
+    check(cards[0].identity == "DDS:051", "consolidation keeps the identity");
+    check(cards[0].hits == 20, "consolidation sums the hits");
+    check(cards[0].lastTs > cards[0].firstTs, "consolidation spans both shows");
+  }
+}
+
+void testCountingIgnoresThinSegments() {
+  cardscan::AnalyzerOptions opt;
+  std::vector<cardscan::ReadSample> reads;
+  for (int i = 0; i < 3; ++i) reads.push_back(makeReadSample(i, i * 0.1, "DDS", "051", "065"));
+  for (int i = 0; i < 8; ++i) {
+    reads.push_back(makeReadSample(40 + i, 4.0 + i * 0.1, "C18", "150", "307"));
+  }
+  const std::vector<cardscan::CardResult> cards = cardscan::buildCardsFromReads(reads, opt);
+  check(cards.size() == 1, "counting drops a segment with too few reads");
+  if (!cards.empty()) check(cards[0].identity == "C18:150", "kept segment is the dense one");
+}
+
 }  // namespace
 
 int main() {
@@ -161,6 +265,11 @@ int main() {
   testHashHelpers();
   testTracker();
   testTrackerGap();
+  testVoteDigits();
+  testMergeReads();
+  testSnapSetCode();
+  testCountingFromReads();
+  testCountingIgnoresThinSegments();
   std::printf("%d checks, %d failures\n", gChecks, gFailures);
   return gFailures == 0 ? 0 : 1;
 }

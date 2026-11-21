@@ -38,9 +38,12 @@ struct DetectorParams {
   double lineCannyLow = 25.0;
   double lineCannyHigh = 80.0;
   int maxLinesPerOrientation = 14;
+  double linePerpendicularTolerance = 5.0;
   double minEdgeCoverage = 0.55;
+  double edgeCoveredThreshold = 0.30;
+  double cornerProximityDistance = 20.0;
+  double minCornerProximity = 0.5;
   int minCoveredEdges = 3;
-  double minBorderSupport = 0.45;
 };
 
 class CardDetector {

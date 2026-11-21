@@ -16,8 +16,6 @@
 
 #include <tesseract/capi.h>
 
-#include "text_runs.h"
-
 namespace cardscan {
 namespace {
 
@@ -202,7 +200,6 @@ CollectorLayout locateCollector(const cv::Mat &cardWarped) {
                        static_cast<int>(std::lround(line.width / scale)),
                        static_cast<int>(std::lround(line.height / scale)));
     box.box &= cv::Rect(0, 0, gray.cols, gray.rows);
-    box.glyphs = static_cast<int>(line.width > 0 ? 1 : 0);
     layout.lines.push_back(box);
   }
   layout.found = layout.block.width > 20 && layout.block.height > 12;
@@ -251,41 +248,7 @@ std::string CardOcr::run(const cv::Mat &gray, int psm) {
     out = text;
     TessDeleteText(text);
   }
-  ++calls_;
   return out;
-}
-
-int CardOcr::textRunCount(const cv::Mat &cardWarped, const cv::Rect &region) const {
-  return countTextRuns(cardWarped, region);
-}
-
-OcrRead CardOcr::quickRead(const cv::Mat &cardWarped) {
-  if (!api_ || cardWarped.empty()) return {};
-  cv::Mat gray;
-  if (cardWarped.channels() == 3) {
-    cv::cvtColor(cardWarped, gray, cv::COLOR_BGR2GRAY);
-  } else {
-    gray = cardWarped;
-  }
-  const CollectorLayout layout = locateCollector(cardWarped);
-  const cv::Rect base = layout.found ? layout.block : regions_.collectorBlock;
-  const cv::Rect r = base & cv::Rect(0, 0, gray.cols, gray.rows);
-  if (r.width < 8 || r.height < 6) return {};
-  OcrRead best;
-  for (int mode = 0; mode <= 1; ++mode) {
-    const int upscale = std::clamp(static_cast<int>(std::lround(260.0 / r.height)), 2, 10);
-    const std::string text = run(prepare(gray(r), mode, upscale), 6);
-    const OcrRead read = parseCollectorText(text);
-    if (betterRead(read, best)) best = read;
-  }
-  if (!best.setCode.empty()) best.setCode = snapSetCode(best.setCode, p_.knownSetCodes);
-  best.regionId = 0;
-  best.score = scoreRead(best);
-  return best;
-}
-
-OcrRead CardOcr::readCardRegion(const cv::Mat &cardWarped, const char *) {
-  return readCard(cardWarped);
 }
 
 OcrRead CardOcr::readCard(const cv::Mat &cardWarped) {
@@ -344,7 +307,8 @@ OcrRead CardOcr::readCard(const cv::Mat &cardWarped) {
     const cv::Rect r = a.region & cv::Rect(0, 0, gray.cols, gray.rows);
     if (r.width < 8 || r.height < 6) continue;
     const int upscale = std::clamp(static_cast<int>(std::lround(260.0 / r.height)), 2, 10);
-    cv::Mat prepared = prepare(gray(r), a.mode, upscale);    const std::string text = run(prepared, a.psm);
+    cv::Mat prepared = prepare(gray(r), a.mode, upscale);
+    const std::string text = run(prepared, a.psm);
     if (!debugDir_.empty()) {
       char name[512];
       std::snprintf(name, sizeof(name), "%s/%s_a%02d_m%d_p%d.png", debugDir_.c_str(),
@@ -359,7 +323,8 @@ OcrRead CardOcr::readCard(const cv::Mat &cardWarped) {
     reads.push_back(parsed);
   }
 
-  OcrRead merged = mergeReads(reads);  if (!merged.setCode.empty()) merged.setCode = snapSetCode(merged.setCode, p_.knownSetCodes);
+  OcrRead merged = mergeReads(reads);
+  if (!merged.setCode.empty()) merged.setCode = snapSetCode(merged.setCode, p_.knownSetCodes);
   merged.score = scoreRead(merged);
   if (!debugDir_.empty()) {
     std::string log = lastRawLog_;
@@ -370,7 +335,8 @@ OcrRead CardOcr::readCard(const cv::Mat &cardWarped) {
   return merged;
 }
 
-std::string CardOcr::readTitle(const cv::Mat &cardWarped) {  if (!api_ || cardWarped.empty()) return {};
+std::string CardOcr::readTitle(const cv::Mat &cardWarped) {
+  if (!api_ || cardWarped.empty()) return {};
   cv::Mat gray;
   if (cardWarped.channels() == 3) {
     cv::cvtColor(cardWarped, gray, cv::COLOR_BGR2GRAY);

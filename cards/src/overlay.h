@@ -14,7 +14,6 @@ struct OverlayStyle {
   cv::Scalar pending{0, 200, 240};
   cv::Scalar unidentified{60, 180, 250};
   cv::Scalar text{255, 255, 255};
-  cv::Scalar panel{0, 0, 0};
   double fontScale = 0.55;
   int thickness = 2;
 };

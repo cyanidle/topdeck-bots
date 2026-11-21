@@ -105,7 +105,8 @@ std::vector<LineSegment> mergeLines(std::vector<LineSegment> lines, const Detect
   return merged;
 }
 
-double segmentCoverageOnEdge(const LineSegment &s, const cv::Point2f &a, const cv::Point2f &b) {
+double segmentCoverageOnEdge(const LineSegment &s, const cv::Point2f &a, const cv::Point2f &b,
+                             double perpendicularTolerance) {
   const cv::Point2f d = b - a;
   const double len = cv::norm(d);
   if (len < 1.0) return 0.0;
@@ -113,7 +114,8 @@ double segmentCoverageOnEdge(const LineSegment &s, const cv::Point2f &a, const c
   auto perpendicular = [&](const cv::Point2f &p) {
     return std::abs(u.x * (p.y - a.y) - u.y * (p.x - a.x));
   };
-  if (perpendicular(s.a) > 5.0 || perpendicular(s.b) > 5.0) return 0.0;
+  if (perpendicular(s.a) > perpendicularTolerance || perpendicular(s.b) > perpendicularTolerance)
+    return 0.0;
   double t1 = (s.a - a).dot(u);
   double t2 = (s.b - a).dot(u);
   if (t1 > t2) std::swap(t1, t2);
@@ -122,11 +124,12 @@ double segmentCoverageOnEdge(const LineSegment &s, const cv::Point2f &a, const c
   return hi > lo ? (hi - lo) / len : 0.0;
 }
 
-double edgeCoverage(const Quad &q, int edgeIndex, const std::vector<LineSegment> &lines) {
+double edgeCoverage(const Quad &q, int edgeIndex, const std::vector<LineSegment> &lines,
+                    double perpendicularTolerance) {
   const cv::Point2f a = q[edgeIndex];
   const cv::Point2f b = q[(edgeIndex + 1) % 4];
   double covered = 0.0;
-  for (const auto &s : lines) covered += segmentCoverageOnEdge(s, a, b);
+  for (const auto &s : lines) covered += segmentCoverageOnEdge(s, a, b, perpendicularTolerance);
   return std::min(1.0, covered);
 }
 
@@ -287,13 +290,15 @@ void collectFromContours(const std::vector<std::vector<cv::Point>> &contours, cv
     double qArea = 0.0, aspect = 0.0;
     if (!plausibleQuad(q, frame, p, &qArea, &aspect)) continue;
 
-    const double c0 = edgeCoverage(q, 0, lines);
-    const double c1 = edgeCoverage(q, 1, lines);
-    const double c2 = edgeCoverage(q, 2, lines);
-    const double c3 = edgeCoverage(q, 3, lines);
+    const double c0 = edgeCoverage(q, 0, lines, p.linePerpendicularTolerance);
+    const double c1 = edgeCoverage(q, 1, lines, p.linePerpendicularTolerance);
+    const double c2 = edgeCoverage(q, 2, lines, p.linePerpendicularTolerance);
+    const double c3 = edgeCoverage(q, 3, lines, p.linePerpendicularTolerance);
     const double coverageMean = 0.25 * (c0 + c1 + c2 + c3);
-    const int coveredEdges = static_cast<int>(c0 >= 0.30) + static_cast<int>(c1 >= 0.30) +
-                             static_cast<int>(c2 >= 0.30) + static_cast<int>(c3 >= 0.30);
+    const int coveredEdges = static_cast<int>(c0 >= p.edgeCoveredThreshold) +
+                             static_cast<int>(c1 >= p.edgeCoveredThreshold) +
+                             static_cast<int>(c2 >= p.edgeCoveredThreshold) +
+                             static_cast<int>(c3 >= p.edgeCoveredThreshold);
     if (coverageMean < p.minEdgeCoverage || coveredEdges < p.minCoveredEdges) continue;
 
     Detection d;
@@ -394,16 +399,18 @@ std::vector<Detection> CardDetector::detect(const cv::Mat &bgr, cv::Mat *edgeDeb
           if (!plausibleQuad(q, work.size(), p_, &area, &aspect)) continue;
 
           const double support = borderSupport(q, distanceMap, work.size());
-          const double c0 = edgeCoverage(q, 0, lines);
-          const double c1 = edgeCoverage(q, 1, lines);
-          const double c2 = edgeCoverage(q, 2, lines);
-          const double c3 = edgeCoverage(q, 3, lines);
+          const double c0 = edgeCoverage(q, 0, lines, p_.linePerpendicularTolerance);
+          const double c1 = edgeCoverage(q, 1, lines, p_.linePerpendicularTolerance);
+          const double c2 = edgeCoverage(q, 2, lines, p_.linePerpendicularTolerance);
+          const double c3 = edgeCoverage(q, 3, lines, p_.linePerpendicularTolerance);
           const double coverageMean = 0.25 * (c0 + c1 + c2 + c3);
-          const int coveredEdges = static_cast<int>(c0 >= 0.30) + static_cast<int>(c1 >= 0.30) +
-                                   static_cast<int>(c2 >= 0.30) + static_cast<int>(c3 >= 0.30);
+          const int coveredEdges = static_cast<int>(c0 >= p_.edgeCoveredThreshold) +
+                                   static_cast<int>(c1 >= p_.edgeCoveredThreshold) +
+                                   static_cast<int>(c2 >= p_.edgeCoveredThreshold) +
+                                   static_cast<int>(c3 >= p_.edgeCoveredThreshold);
           if (coverageMean < p_.minEdgeCoverage || coveredEdges < p_.minCoveredEdges) continue;
-          const double cornerFactor = cornerProximity(q, lines, 20.0);
-          if (cornerFactor < 0.5) continue;
+          const double cornerFactor = cornerProximity(q, lines, p_.cornerProximityDistance);
+          if (cornerFactor < p_.minCornerProximity) continue;
 
           const double cardDim = std::min(quadWidth(q), quadHeight(q));
           const Quad refined =

@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -10,6 +12,7 @@
 
 #include "analyzer.h"
 #include "overlay.h"
+#include "phash.h"
 #include "report.h"
 
 namespace {
@@ -30,21 +33,10 @@ const char *kUsage =
     "  --max-frames <n>      stop after n frames (video)\n"
     "  --no-ocr              skip text recognition (geometry only)\n"
     "  --no-title            disable card-name fallback\n"
+    "  --probe-card <img>    run the collector-line locator + OCR on one card crop and print the read\n"
+    "  --compare <a> <b>     print perceptual-hash / colour-signature distance of two images\n"
     "  --verbose             per-track logging to stderr\n"
     "  --help                this message\n";
-
-bool hasImageExtension(const std::string &path) {
-  const size_t dot = path.find_last_of('.');
-  if (dot == std::string::npos) return false;
-  std::string ext = path.substr(dot + 1);
-  std::transform(ext.begin(), ext.end(), ext.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  static const char *kImages[] = {"jpg", "jpeg", "png", "bmp", "webp", "tif", "tiff"};
-  for (const char *e : kImages) {
-    if (ext == e) return true;
-  }
-  return false;
-}
 
 void writeOverlayImage(const std::string &path, const std::string &output,
                        const cardscan::ImageResult &result) {
@@ -211,7 +203,7 @@ int run(int argc, char **argv) {
   }
   cardscan::Analyzer analyzer(options);
 
-  const bool image = hasImageExtension(input);
+  const bool image = cardscan::hasImageExtension(input);
   std::string json;
   std::string summary;
   if (image) {

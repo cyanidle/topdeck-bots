@@ -24,13 +24,6 @@ from typing import Any, Iterable, Sequence
 
 __all__ = ["CardscanError", "Scanner", "analyze", "library_path"]
 
-_OPTION_INT_KEYS = {
-    "min_track_hits",
-    "ocr_stride",
-    "max_frames",
-    "stride",
-}
-
 
 class CardscanError(RuntimeError):
     """Raised when the native detector reports an error."""

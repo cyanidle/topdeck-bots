@@ -137,8 +137,4 @@ cv::Mat warpQuad(const cv::Mat &src, const Quad &quad, int outWidth, int outHeig
   return out;
 }
 
-cv::Mat warpQuadMax(const cv::Mat &src, const Quad &quad, int outWidth, int outHeight) {
-  return warpQuad(src, quad, outWidth, outHeight, cv::INTER_CUBIC);
-}
-
 }  // namespace cardscan

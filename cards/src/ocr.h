@@ -27,7 +27,6 @@ struct CardRegions {
 
 struct TextLineBox {
   cv::Rect box;
-  int glyphs = 0;
 };
 
 struct CollectorLayout {
@@ -52,12 +51,7 @@ class CardOcr {
   const OcrParams &params() const { return p_; }
 
   OcrRead readCard(const cv::Mat &cardWarped);
-  OcrRead quickRead(const cv::Mat &cardWarped);
-  OcrRead readCardRegion(const cv::Mat &cardWarped, const char *labelSuffix = "");
   std::string readTitle(const cv::Mat &cardWarped);
-
-  int textRunCount(const cv::Mat &cardWarped, const cv::Rect &region) const;
-  int callsMade() const { return calls_; }
 
   void setDebugDir(const std::string &dir, const std::string &prefix = "ocr") {
     debugDir_ = dir;
@@ -75,7 +69,6 @@ class CardOcr {
   std::string debugDir_;
   std::string debugPrefix_ = "ocr";
   std::string lastRawLog_;
-  int calls_ = 0;
 };
 
 }

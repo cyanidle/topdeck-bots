@@ -1,5 +1,6 @@
 #include "capi.h"
 
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -21,18 +22,6 @@ struct CardscanHandle {
 extern "C" __attribute__((weak)) void xmlNanoHTTPCleanup(void) {}
 
 namespace {
-
-bool hasImageExtension(const std::string &path) {
-  const size_t dot = path.find_last_of('.');
-  if (dot == std::string::npos) return false;
-  std::string ext = path.substr(dot + 1);
-  for (char &c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  static const char *kImages[] = {"jpg", "jpeg", "png", "bmp", "webp", "tif", "tiff"};
-  for (const char *e : kImages) {
-    if (ext == e) return true;
-  }
-  return false;
-}
 
 char *copyString(const std::string &text) {
   char *out = static_cast<char *>(std::malloc(text.size() + 1));
@@ -98,7 +87,7 @@ char *cardscan_analyze(CardscanHandle *handle, const char *path) {
     cardscan::Analyzer analyzer(handle->options);
     const std::string input(path);
     std::string json;
-    if (hasImageExtension(input)) {
+    if (cardscan::hasImageExtension(input)) {
       json = cardscan::imageResultJson(analyzer.analyzeImage(input));
     } else {
       json = cardscan::videoResultJson(analyzer.analyzeVideo(input));

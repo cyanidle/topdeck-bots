@@ -30,8 +30,13 @@ struct AnalyzerOptions {
   int maxOcrScreensPerFrame = 3;
   int ocrStride = 2;
   int minSegmentReads = 5;
+  double segmentGapSeconds = 0.6;
+  double segmentCodeDistance = 2.5;
+  int segmentIncompatibleRun = 3;
   double maxSegmentSeconds = 2.5;
   double ocrMinQuality = 0.25;
+  double nestedIou = 0.60;
+  double nestedContainment = 0.85;
   int hashMergeDistance = 16;
   double hashMergeGapSeconds = 0.5;
   std::string debugDir;
@@ -101,5 +106,11 @@ class Analyzer {
  private:
   AnalyzerOptions opt_;
 };
+
+bool hasImageExtension(const std::string &path);
+std::string voteDigits(const std::vector<std::string> &values);
+std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads,
+                                            const AnalyzerOptions &opt);
+void consolidateCards(std::vector<CardResult> &cards);
 
 }
