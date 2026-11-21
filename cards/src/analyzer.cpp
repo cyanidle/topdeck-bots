@@ -843,6 +843,11 @@ VideoResult Analyzer::analyzeVideo(const std::string &path) {
         index % opt_.ocrStride == 0) {
       const VerifiedCandidate &top = candidates.front();
       if (looksLikeCard(top, opt_)) {
+        if (!opt_.debugDir.empty()) {
+          char prefix[64];
+          std::snprintf(prefix, sizeof(prefix), "cand_f%06d", index);
+          ocr->setDebugDir(opt_.debugDir, prefix);
+        }
         const OcrRead read = ocr->readCard(top.crop);
         if (!read.raw.empty()) {
           ++result.readsTotal;

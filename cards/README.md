@@ -66,7 +66,8 @@ print(report["count"], [c["identity"] for c in report["cards"]])
 * Фото: размеченный PNG с четырёхугольниками и подписями `SET number/total conf`.
 * Видео: MP4 с треками (`T<id>`), текущим чтением, HUD со счётчиками.
 * `--debug-dir`: `frame_XXXXXX.jpg` (размеченные кадры), `track_XXXX.jpg` (лучший кроп карты),
-  `cand_XX_aXX_*.png` (то, что реально ушло в Tesseract), `*_raw.txt`, `reads.txt` (таймлайн OCR).
+  `track_XXXX_fNNNNNN_aXX_*.png` и `cand_fNNNNNN_aXX_*.png` (то, что реально ушло в Tesseract:
+  путь треков и путь подсчёта), `*_raw.txt`, `reads.txt` (таймлайн OCR).
 
 ## Интеграция с ботом
 
