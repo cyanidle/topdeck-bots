@@ -1,6 +1,7 @@
 #include "hashindex.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -89,6 +90,52 @@ std::vector<IndexMatch> HashIndex::lookup(const std::string &fullHex, const std:
 std::vector<IndexMatch> HashIndex::lookupCard(const cv::Mat &card, int topK) const {
   if (card.empty()) return {};
   return lookup(perceptualHash(card), artHash(card), topK);
+}
+
+namespace {
+
+std::string normalizeName(const std::string &name) {
+  std::string out;
+  for (unsigned char ch : name) {
+    if (ch >= 0x80) continue;
+    const char c = static_cast<char>(std::toupper(ch));
+    if (std::isalnum(static_cast<unsigned char>(c))) {
+      out.push_back(c);
+    } else if (!out.empty() && out.back() != ' ') {
+      out.push_back(' ');
+    }
+  }
+  while (!out.empty() && out.back() == ' ') out.pop_back();
+  return out;
+}
+
+}  // namespace
+
+std::vector<IndexMatch> HashIndex::findByName(const std::string &name, int topK) const {
+  std::vector<IndexMatch> matches;
+  const std::string wanted = normalizeName(name);
+  if (wanted.size() < 4) return matches;
+  for (const auto &entry : entries_) {
+    const std::string candidate = normalizeName(entry.name);
+    if (candidate.empty()) continue;
+    if (candidate != wanted && candidate.find(wanted) == std::string::npos &&
+        wanted.find(candidate) == std::string::npos) {
+      continue;
+    }
+    IndexMatch m;
+    m.setCode = entry.setCode;
+    m.collector = entry.collector;
+    m.name = entry.name;
+    m.artDistance = candidate == wanted ? 0 : 1;
+    m.fullDistance = 0;
+    matches.push_back(std::move(m));
+  }
+  std::sort(matches.begin(), matches.end(), [](const IndexMatch &a, const IndexMatch &b) {
+    if (a.artDistance != b.artDistance) return a.artDistance < b.artDistance;
+    return a.collector < b.collector;
+  });
+  if (topK > 0 && static_cast<int>(matches.size()) > topK) matches.resize(topK);
+  return matches;
 }
 
 bool buildHashIndex(const std::string &metaPath, const std::string &outPath) {

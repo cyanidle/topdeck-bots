@@ -56,3 +56,8 @@ else
 fi
 
 echo "golden checks passed"
+
+if [[ -x "$here/run_identity_check.sh" ]]; then
+  CARDSCAN_BIN="$bin" \
+  CARDSCAN_SAMPLE_VIDEO="$video" "$here/run_identity_check.sh"
+fi

@@ -520,35 +520,91 @@ std::string normalizeCollector(const std::string &collector) {
   return collector.substr(start);
 }
 
-// Identity from the image-hash index: the artwork is far more informative than a 13 px
-// collector line, so a confident index hit outranks the OCR codes.
-bool applyIndexIdentity(CardResult &card, const HashIndex &index, const AnalyzerOptions &opt,
-                        const std::string &fullHash, const std::string &artHash) {
-  if (index.empty() || fullHash.empty() || artHash.empty()) return false;
-  const std::vector<IndexMatch> matches = index.lookup(fullHash, artHash, 2);
-  if (matches.empty()) return false;
-  const IndexMatch &best = matches.front();
-  if (best.artDistance > opt.indexMaxDistance) return false;
-  if (matches.size() > 1 && matches[1].artDistance - best.artDistance < opt.indexMinMargin) {
-    return false;
+// One identity channel (collector line, artwork hash, title) and its strength.
+struct Evidence {
+  bool valid = false;
+  std::string setCode;
+  std::string number;
+  std::string name;
+  double strength = 0.0;
+};
+
+struct FusedIdentity {
+  bool identified = false;
+  std::string setCode;
+  std::string number;
+  std::string name;
+  std::string identity;
+  std::string sources;
+  double confidence = 0.0;
+};
+
+FusedIdentity fuseEvidence(const Evidence &codes, const Evidence &hash, const Evidence &byName) {
+  struct Vote {
+    double score = 0.0;
+    std::string setCode;
+    std::string number;
+    std::string name;
+    std::string sources;
+  };
+  std::map<std::string, Vote> votes;
+  auto add = [&](const Evidence &e, double weight, const char *source) {
+    if (!e.valid || e.setCode.empty() || e.number.empty()) return;
+    const std::string key = e.setCode + ":" + normalizeCollector(e.number);
+    Vote &vote = votes[key];
+    vote.score += weight * std::max(0.1, std::min(1.0, e.strength));
+    vote.setCode = e.setCode;
+    // Keep the printed spelling (the collector line keeps its leading zeros) when the
+    // OCR channel has it; the index numbers are canonical (no padding).
+    if (vote.number.empty() || std::string(source) == "codes") vote.number = e.number;
+    if (!e.name.empty()) vote.name = e.name;
+    if (vote.sources.empty()) {
+      vote.sources = source;
+    } else if (vote.sources.find(source) == std::string::npos) {
+      vote.sources += "+";
+      vote.sources += source;
+    }
+  };
+  add(codes, 1.0, "codes");
+  add(hash, 1.4, "index");
+  add(byName, 0.8, "name");
+
+  FusedIdentity out;
+  double bestScore = 0.0;
+  for (auto &entry : votes) {
+    if (entry.second.score <= bestScore) continue;
+    bestScore = entry.second.score;
+    out.identified = true;
+    out.setCode = entry.second.setCode;
+    out.number = entry.second.number;
+    out.name = entry.second.name;
+    out.identity = entry.second.setCode + ":" + entry.second.number;
+    out.sources = entry.second.sources;
   }
-  const std::string key = best.setCode + ":" + normalizeCollector(best.collector);
-  const bool agrees =
-      !card.identity.empty() &&
-      (normalizeCollector(card.number) == normalizeCollector(best.collector) ||
-       card.setCode == best.setCode);
-  card.setCode = best.setCode;
-  card.number = normalizeCollector(best.collector);
-  card.total.clear();
-  if (card.name.empty()) card.name = best.name;
-  card.identity = key;
+  if (out.identified) {
+    out.confidence = std::min(0.95, 0.30 + 0.30 * bestScore);
+  } else if (!byName.name.empty() && !byName.setCode.empty()) {
+    out.identified = true;
+    out.setCode = byName.setCode;
+    out.number = byName.number;
+    out.name = byName.name;
+    out.identity = "N:" + byName.name;
+    out.sources = "title";
+    out.confidence = 0.3;
+  }
+  return out;
+}
+
+void applyFused(CardResult &card, const FusedIdentity &fused) {
+  if (!fused.identified) return;
   card.identified = true;
-  card.identifiedByCodes = true;
-  card.identifiedBy = "index";
-  const double strength =
-      1.0 - std::min(1.0, static_cast<double>(best.artDistance) / (opt.indexMaxDistance + 1.0));
-  card.confidence = std::min(1.0, (agrees ? 0.7 : 0.45) + 0.5 * strength);
-  return true;
+  card.identity = fused.identity;
+  card.identifiedByCodes = fused.sources != "title";
+  card.identifiedBy = fused.sources;
+  card.confidence = fused.confidence;
+  if (!fused.setCode.empty()) card.setCode = fused.setCode;
+  if (!fused.number.empty()) card.number = fused.number;
+  if (card.name.empty()) card.name = fused.name;
 }
 
 std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads,
@@ -627,7 +683,7 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
     // A number is only trustworthy when it was printed next to a set code that belongs to
     // this card: mixing the code of one card with the number of the next one produced
     // confident-looking but wrong identities.
-    std::vector<std::string> numbers, totals;
+    std::vector<std::string> numbers;
     std::vector<const ReadSample *> supporters;
     for (const auto *item : segment.items) {
       if (item->number.empty()) continue;
@@ -636,7 +692,6 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
         continue;
       }
       numbers.push_back(item->number);
-      if (!item->total.empty()) totals.push_back(item->total);
       supporters.push_back(item);
     }
     CardResult card;
@@ -659,7 +714,13 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
     }
     if (haveNumber) {
       card.number = number;
-      card.total = voteDigits(totals);
+      std::vector<std::string> matchingTotals;
+      for (const auto *item : supporters) {
+        if (item->number == number && !item->total.empty()) matchingTotals.push_back(item->total);
+      }
+      if (static_cast<int>(matchingTotals.size()) >= opt.minNumberSupport) {
+        card.total = voteDigits(matchingTotals);
+      }
       card.rarity = numberSource ? numberSource->rarity : "";
       // Prefer the code spelling that was read together with the winning number.
       std::map<std::string, double> codeFromNumber;
@@ -699,13 +760,28 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
     }
     card.mergedTrackIds.push_back(card.trackId);
 
+    Evidence codesEvidence;
+    if (!card.setCode.empty() && haveNumber) {
+      codesEvidence.valid = true;
+      codesEvidence.setCode = card.setCode;
+      codesEvidence.number = card.number;
+      codesEvidence.name = card.name;
+      const double agreement =
+          supporters.empty() ? 0.0 : static_cast<double>(numberSupport) / supporters.size();
+      codesEvidence.strength = std::min(1.0, 0.25 + 0.75 * agreement);
+    }
+
+    Evidence hashEvidence;
+    Evidence nameEvidence;
     if (index && !index->empty()) {
       std::map<std::string, int> votes;
       std::map<std::string, IndexMatch> best;
+      std::map<std::string, const ReadSample *> source;
       for (const auto *item : segment.items) {
         if (item->artHash.empty()) continue;
         const std::vector<IndexMatch> matches = index->lookup(item->hash, item->artHash, 2);
         if (matches.empty() || matches[0].artDistance > opt.indexMaxDistance) continue;
+        if (matches[0].fullDistance > opt.indexMaxFullDistance) continue;
         if (matches.size() > 1 &&
             matches[1].artDistance - matches[0].artDistance < opt.indexMinMargin) {
           continue;
@@ -714,6 +790,8 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
             matches[0].setCode + ":" + normalizeCollector(matches[0].collector);
         ++votes[key];
         best.emplace(key, matches[0]);
+        const ReadSample *&slot = source[key];
+        if (!slot || item->quality > slot->quality) slot = item;
       }
       std::string bestKey;
       int bestVotes = 0;
@@ -723,36 +801,69 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
           bestKey = vote.first;
         }
       }
-      if (bestVotes > 0 && bestVotes >= opt.indexMinSupport) {
+      if (bestVotes > 0 && (bestVotes >= opt.indexMinSupport ||
+                            (bestVotes == 1 && votes.size() == 1))) {
         const IndexMatch &match = best[bestKey];
-        const ReadSample *source = nullptr;
-        for (const auto *item : segment.items) {
-          if (item->artHash.empty()) continue;
-          const std::vector<IndexMatch> matches = index->lookup(item->hash, item->artHash, 1);
-          if (matches.empty()) continue;
-          if (matches[0].setCode + ":" + normalizeCollector(matches[0].collector) != bestKey) {
-            continue;
-          }
-          if (!source || item->quality > source->quality) source = item;
-        }
-        const bool agrees = card.identity == bestKey;
-        card.setCode = match.setCode;
-        card.number = normalizeCollector(match.collector);
-        card.total.clear();
-        card.identity = bestKey;
-        card.identified = true;
-        card.identifiedByCodes = true;
-        card.identifiedBy = "index";
-        if (card.name.empty()) card.name = match.name;
         const double agreement =
             static_cast<double>(bestVotes) / std::max<size_t>(1, segment.items.size());
-        card.confidence = std::min(1.0, 0.35 + 0.6 * agreement + (agrees ? 0.1 : 0.0));
-        if (source) {
-          card.bestFrame = source->frame;
-          card.bestTs = source->ts;
-          if (!source->quad.empty()) card.quad = source->quad;
+        hashEvidence.valid = true;
+        hashEvidence.setCode = match.setCode;
+        hashEvidence.number = normalizeCollector(match.collector);
+        hashEvidence.name = match.name;
+        hashEvidence.strength = std::min(1.0, 0.45 + 0.55 * agreement);
+        const ReadSample *src = source[bestKey];
+        if (src) {
+          card.bestFrame = src->frame;
+          card.bestTs = src->ts;
+          if (!src->quad.empty()) card.quad = src->quad;
         }
       }
+
+      std::map<std::string, int> nameVotes;
+      for (const auto *item : segment.items) {
+        if (!item->name.empty()) ++nameVotes[item->name];
+      }
+      std::string segmentName;
+      int nameVotes_ = 0;
+      for (const auto &vote : nameVotes) {
+        if (vote.second > nameVotes_) {
+          nameVotes_ = vote.second;
+          segmentName = vote.first;
+        }
+      }
+      if (!segmentName.empty()) {
+        const std::vector<IndexMatch> byName = index->findByName(segmentName, 8);
+        bool sameCard = !byName.empty();
+        for (const auto &candidate : byName) {
+          if (candidate.setCode != byName.front().setCode ||
+              normalizeCollector(candidate.collector) !=
+                  normalizeCollector(byName.front().collector)) {
+            sameCard = false;
+            break;
+          }
+        }
+        if (sameCard) {
+          nameEvidence.valid = true;
+          nameEvidence.setCode = byName.front().setCode;
+          nameEvidence.number = normalizeCollector(byName.front().collector);
+          nameEvidence.name = byName.front().name;
+          nameEvidence.strength = byName.front().artDistance == 0 ? 0.8 : 0.5;
+        } else if (!byName.empty()) {
+          nameEvidence.name = segmentName;
+        }
+      }
+      if (card.name.empty() && !segmentName.empty()) card.name = segmentName;
+    }
+
+    const FusedIdentity fused = fuseEvidence(codesEvidence, hashEvidence, nameEvidence);
+    if (fused.identified) {
+      applyFused(card, fused);
+    } else if (codesEvidence.valid) {
+      card.identified = true;
+      card.identifiedByCodes = true;
+      card.identifiedBy = "codes";
+      card.identity = card.setCode + ":" + card.number;
+      card.confidence = std::min(0.8, 0.25 + 0.5 * codesEvidence.strength);
     }
     cards.push_back(card);
   }
@@ -881,23 +992,70 @@ ImageResult Analyzer::analyzeImage(const std::string &path) {
     c.quad.assign(v.detection.quad.begin(), v.detection.quad.end());
     c.hash = hashCrop(crop);
     fillFromRead(c, s.read);
-    if (!s.read.identityKey().empty()) {
-      c.identified = true;
-      c.identifiedByCodes = true;
-      c.identity = s.read.identityKey();
-      c.confidence = std::min(1.0, s.read.score / 11.0);
-    } else if (ocr && ocr->available() && opt_.enableTitleFallback) {
-      c.name = ocr->readTitle(crop);
-      if (c.name.size() >= 4) {
-        c.identity = "N:" + asciiUpper(c.name);
-        c.identified = true;
-        c.confidence = 0.3;
+
+    Evidence codesEvidence;
+    if (s.read.hasIdentity()) {
+      codesEvidence.valid = true;
+      codesEvidence.setCode = s.read.setCode;
+      codesEvidence.number = s.read.number;
+      codesEvidence.name = s.read.name;
+      codesEvidence.strength = std::min(1.0, s.read.score / 11.0);
+    }
+
+    Evidence hashEvidence;
+    if (!index_.empty()) {
+      const std::vector<IndexMatch> matches = index_.lookupCard(crop, 2);
+      if (!matches.empty() && matches[0].artDistance <= opt_.indexMaxDistance &&
+          matches[0].fullDistance <= opt_.indexMaxFullDistance &&
+          (matches.size() < 2 ||
+           matches[1].artDistance - matches[0].artDistance >= opt_.indexMinMargin)) {
+        hashEvidence.valid = true;
+        hashEvidence.setCode = matches[0].setCode;
+        hashEvidence.number = normalizeCollector(matches[0].collector);
+        hashEvidence.name = matches[0].name;
+        hashEvidence.strength =
+            1.0 - std::min(1.0, static_cast<double>(matches[0].artDistance) /
+                                   (opt_.indexMaxDistance + 1.0));
       }
     }
-    result.cards.push_back(c);
-    if (!index_.empty()) {
-      applyIndexIdentity(result.cards.back(), index_, opt_, hashCrop(crop), artHash(crop));
+
+    Evidence nameEvidence;
+    std::string title;
+    if (ocr && ocr->available() && opt_.enableTitleFallback) title = ocr->readTitle(crop);
+    if (!title.empty()) {
+      if (c.name.empty()) c.name = title;
+      if (!index_.empty()) {
+        const std::vector<IndexMatch> byName = index_.findByName(title, 8);
+        bool sameCard = !byName.empty();
+        for (const auto &candidate : byName) {
+          if (candidate.setCode != byName.front().setCode ||
+              normalizeCollector(candidate.collector) !=
+                  normalizeCollector(byName.front().collector)) {
+            sameCard = false;
+            break;
+          }
+        }
+        if (sameCard) {
+          nameEvidence.valid = true;
+          nameEvidence.setCode = byName.front().setCode;
+          nameEvidence.number = normalizeCollector(byName.front().collector);
+          nameEvidence.name = byName.front().name;
+          nameEvidence.strength = byName.front().artDistance == 0 ? 0.8 : 0.5;
+        }
+      }
     }
+
+    const FusedIdentity fused = fuseEvidence(codesEvidence, hashEvidence, nameEvidence);
+    if (fused.identified) {
+      applyFused(c, fused);
+    } else if (title.size() >= 4) {
+      c.name = title;
+      c.identity = "N:" + asciiUpper(title);
+      c.identified = true;
+      c.identifiedBy = "title";
+      c.confidence = 0.3;
+    }
+    result.cards.push_back(c);
     if (!opt_.debugDir.empty()) {
       char name[64];
       std::snprintf(name, sizeof(name), "/det_%02d_card.jpg", c.trackId);
@@ -1048,6 +1206,9 @@ VideoResult Analyzer::analyzeVideo(const std::string &path) {
           sample.identity = read.identityKey();
           sample.hash = top.hash;
           sample.artHash = top.artHash;
+          if (read.identityKey().empty() && ocr && opt_.enableTitleFallback) {
+            sample.name = ocr->readTitle(top.crop);
+          }
           sample.quad.assign(top.detection.quad.begin(), top.detection.quad.end());
           if (!sample.identity.empty()) ++result.readsWithIdentity;
           result.reads.push_back(sample);

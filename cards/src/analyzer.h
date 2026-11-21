@@ -48,6 +48,7 @@ struct AnalyzerOptions {
   double hashMergeGapSeconds = 0.5;
   std::string phashIndexPath;
   int indexMaxDistance = 26;
+  int indexMaxFullDistance = 28;
   int indexMinMargin = 2;
   int indexMinSupport = 2;
   std::string debugDir;
