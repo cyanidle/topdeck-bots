@@ -436,7 +436,7 @@ void consolidateCards(std::vector<CardResult> &cards) {
       }
       if (!bestCode.empty()) {
         cluster.card.setCode = bestCode;
-        cluster.card.identity = bestCode + ":" + cluster.card.number;
+        cluster.card.identity = bestCode + ":" + normalizeCollector(cluster.card.number);
       }
     }
     merged.push_back(cluster.card);
@@ -578,7 +578,7 @@ FusedIdentity fuseEvidence(const Evidence &codes, const Evidence &hash, const Ev
     out.setCode = entry.second.setCode;
     out.number = entry.second.number;
     out.name = entry.second.name;
-    out.identity = entry.second.setCode + ":" + entry.second.number;
+    out.identity = entry.second.setCode + ":" + normalizeCollector(entry.second.number);
     out.sources = entry.second.sources;
   }
   if (out.identified) {
@@ -672,12 +672,29 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
   for (const auto &segment : segments) {
     if (static_cast<int>(segment.items.size()) < std::max(2, opt.minSegmentReads)) continue;
 
+    // The presented card is the largest one in the frame; readings of a smaller neighbour
+    // card that happens to share the set code must not vote on this card's identity.
+    auto quadArea = [](const std::vector<cv::Point2f> &points) {
+      if (points.size() != 4) return 0.0;
+      Quad q;
+      std::copy(points.begin(), points.end(), q.begin());
+      return polygonArea(q);
+    };
+    double maxArea = 0.0;
+    for (const auto *item : segment.items) maxArea = std::max(maxArea, quadArea(item->quad));
+    auto spatialOk = [&](const ReadSample *item) {
+      if (maxArea <= 0.0 || item->quad.size() != 4) return true;
+      return quadArea(item->quad) >= opt.segmentMinAreaRatio * maxArea;
+    };
+
     std::map<std::string, double> codeVotes;
     const ReadSample *chosen = nullptr;
     for (const auto *item : segment.items) {
+      if (!spatialOk(item)) continue;
       if (!item->code.empty()) codeVotes[item->code] += 0.2 + item->quality;
       if (!chosen || item->quality > chosen->quality) chosen = item;
     }
+    if (!chosen) chosen = segment.items.front();
     std::string code = voteSetCode(codeVotes, opt.segmentNumberCodeTolerance);
 
     // A number is only trustworthy when it was printed next to a set code that belongs to
@@ -686,7 +703,7 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
     std::vector<std::string> numbers;
     std::vector<const ReadSample *> supporters;
     for (const auto *item : segment.items) {
-      if (item->number.empty()) continue;
+      if (item->number.empty() || !spatialOk(item)) continue;
       if (!item->code.empty() && !code.empty() &&
           codeDistance(item->code, code) > opt.segmentNumberCodeTolerance) {
         continue;
@@ -737,7 +754,7 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
     if (!haveNumber) card.rarity = chosen ? chosen->rarity : "";
     card.name = chosen ? chosen->name : "";
     if (!card.setCode.empty() && haveNumber) {
-      card.identity = card.setCode + ":" + card.number;
+      card.identity = card.setCode + ":" + normalizeCollector(card.number);
       card.identified = true;
       card.identifiedByCodes = true;
       const double agreement =
@@ -778,7 +795,7 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
       std::map<std::string, IndexMatch> best;
       std::map<std::string, const ReadSample *> source;
       for (const auto *item : segment.items) {
-        if (item->artHash.empty()) continue;
+        if (item->artHash.empty() || !spatialOk(item)) continue;
         const std::vector<IndexMatch> matches = index->lookup(item->hash, item->artHash, 2);
         if (matches.empty() || matches[0].artDistance > opt.indexMaxDistance) continue;
         if (matches[0].fullDistance > opt.indexMaxFullDistance) continue;
@@ -821,7 +838,7 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
 
       std::map<std::string, int> nameVotes;
       for (const auto *item : segment.items) {
-        if (!item->name.empty()) ++nameVotes[item->name];
+        if (!item->name.empty() && spatialOk(item)) ++nameVotes[item->name];
       }
       std::string segmentName;
       int nameVotes_ = 0;
@@ -862,7 +879,7 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
       card.identified = true;
       card.identifiedByCodes = true;
       card.identifiedBy = "codes";
-      card.identity = card.setCode + ":" + card.number;
+      card.identity = card.setCode + ":" + normalizeCollector(card.number);
       card.confidence = std::min(0.8, 0.25 + 0.5 * codesEvidence.strength);
     }
     cards.push_back(card);

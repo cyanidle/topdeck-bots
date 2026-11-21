@@ -227,10 +227,11 @@ void testCountingFromReads() {
   std::vector<cardscan::CardResult> cards = cardscan::buildCardsFromReads(reads, opt);
   check(cards.size() == 3, "counting splits on the pause and keeps the shows apart");
   if (cards.size() == 3) {
-    check(cards[0].identity == "DDS:051", "counting votes the majority set code");
+    check(cards[0].identity == "DDS:51", "counting votes the majority set code");
+    check(cards[0].number == "051", "counting keeps the printed collector number");
     check(cards[0].number == "051" && cards[0].total == "065", "counting votes the number");
     check(cards[1].identity == "C18:150", "counting follows the set change");
-    check(cards[2].identity == "DDS:051", "counting sees the repeated card again");
+    check(cards[2].identity == "DDS:51", "counting sees the repeated card again");
     check(cards[0].firstTs < cards[1].firstTs && cards[1].firstTs < cards[2].firstTs,
           "counting keeps chronological order");
   }
@@ -238,7 +239,7 @@ void testCountingFromReads() {
   cardscan::consolidateCards(cards);
   check(cards.size() == 2, "consolidation merges the repeated identity");
   if (cards.size() == 2) {
-    check(cards[0].identity == "DDS:051", "consolidation keeps the identity");
+    check(cards[0].identity == "DDS:51", "consolidation keeps the identity");
     check(cards[0].hits == 20, "consolidation sums the hits");
     check(cards[0].lastTs > cards[0].firstTs, "consolidation spans both shows");
   }

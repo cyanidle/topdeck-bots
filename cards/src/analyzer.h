@@ -40,6 +40,7 @@ struct AnalyzerOptions {
   int segmentIncompatibleRun = 3;
   int minNumberSupport = 2;
   double minNumberAgreement = 0.25;
+  double segmentMinAreaRatio = 0.60;
   double maxSegmentSeconds = 2.5;
   double ocrMinQuality = 0.25;
   double nestedIou = 0.60;

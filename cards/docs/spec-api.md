@@ -108,7 +108,7 @@ cardscan <input.(jpg|png|mp4|mov|...)> [options]
 | `identified` | сколько из них с распознанной идентичностью |
 | `set` | код сета как напечатан (`DDS`, `C18`, `TMT`); сравнивать с `cards.set_code` в БД без учёта регистра |
 | `collector` | `number/total` как напечатано (с ведущими нулями, если их прочитали) |
-| `identity` | `SET:number` (или `N:NAME` для fallback по названию); пусто, если не распознано |
+| `identity` | `SET:number` **канонически**: без ведущих нулей (`DDS:51`), удобно для джойна с БД; печатная форма — в `set`/`collector`/`collector_number`. Fallback по названию — `N:NAME`; пусто, если не распознано |
 | `identified_by` | `codes`, `index` (по картинке, см. `spec-scryfall-index.md`), `name` или `null` |
 | `confidence` | агрегированная уверенность 0…1 (не вероятность модели, а согласие чтений) |
 | `phash` | pHash кропа карты (16 hex-символов) — для отладки и внешней склейки |
