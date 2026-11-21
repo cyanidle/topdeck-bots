@@ -62,19 +62,22 @@ std::string normalizeOcrText(const std::string &s) {
     if (c == '.' || c == ',' || c == ':' || c == '~' || c == '+' || c == '-' || c == '"' || c == '\'')
       c = '*';
     if (c == ';') c = '*';
+    if (c == '=') c = ' ';
   }
   return collapseSpaces(ascii);
 }
 
 int scoreRead(const OcrRead &r) {
   int score = 0;
-  if (r.hasCollector()) {
-    score += 4;
-    try {
-      const int num = std::stoi(r.number);
-      const int total = std::stoi(r.total);
-      if (total > 0 && num >= 1 && num <= total) score += 1;
-    } catch (...) {
+  if (!r.number.empty()) {
+    score += r.total.empty() ? 3 : 4;
+    if (!r.total.empty()) {
+      try {
+        const int num = std::stoi(r.number);
+        const int total = std::stoi(r.total);
+        if (total > 0 && num >= 1 && num <= total) score += 1;
+      } catch (...) {
+      }
     }
   }
   if (r.hasSetCode()) score += 3;
@@ -132,6 +135,19 @@ OcrRead parseCollectorText(const std::string &text) {
     } catch (...) {
       r.number.clear();
       r.total.clear();
+    }
+  }
+
+  // Many printings show no "/total": either "<rarity> <number> <code>" (Universes Beyond,
+  // e.g. "U 0180 FFXVI") or the zero-padded number alone.
+  if (r.number.empty()) {
+    if (auto m = ctre::search<R"(\b([CURMSLTB])\s+(\d{3,4})\b)">(s)) {
+      r.rarity = m.get<1>().to_string();
+      r.number = m.get<2>().to_string();
+    } else if (auto m = ctre::search<R"(\b(0\d{2,3})\b)">(s)) {
+      r.number = m.get<1>().to_string();
+    } else if (auto m = ctre::search<R"(\b(\d{3})\b)">(s)) {
+      r.number = m.get<1>().to_string();
     }
   }
 
@@ -269,15 +285,30 @@ OcrRead mergeReads(const std::vector<OcrRead> &reads) {
   };
 
   OcrRead out;
-  const std::string number = voteField(1, false, [](const OcrRead &r) {
+  const std::string pair = voteField(1, false, [](const OcrRead &r) {
     return r.number.empty() || r.total.empty() ? std::string() : r.number + "/" + r.total;
   });
-  const size_t slash = number.find('/');
-  if (slash != std::string::npos) {
-    out.number = number.substr(0, slash);
-    out.total = number.substr(slash + 1);
+  if (!pair.empty()) {
+    const size_t slash = pair.find('/');
+    if (slash != std::string::npos) {
+      out.number = pair.substr(0, slash);
+      out.total = pair.substr(slash + 1);
+    }
+  } else {
+    out.number = voteField(1, false, [](const OcrRead &r) { return r.number; });
   }
   out.setCode = voteField(2, false, [](const OcrRead &r) { return r.setCode; });
+  if (!out.number.empty()) {
+    // The set code must belong to the same read as the number: a code read from one line
+    // and a number read from another (or from a neighbouring card) made wrong identities.
+    std::vector<std::pair<std::string, double>> items;
+    for (const auto &r : reads) {
+      if (r.number != out.number || r.setCode.empty()) continue;
+      items.emplace_back(r.setCode, static_cast<double>(std::max(1, r.score)));
+    }
+    const std::string sameLine = pickBest(items);
+    if (!sameLine.empty()) out.setCode = sameLine;
+  }
   out.language = voteField(2, false,
                            [](const OcrRead &r) { return r.setCode.empty() ? std::string() : r.language; });
   out.rarity = voteField(1, false, [](const OcrRead &r) { return r.rarity; });

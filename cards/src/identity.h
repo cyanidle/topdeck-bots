@@ -18,7 +18,7 @@ struct OcrRead {
 
   bool hasCollector() const { return !number.empty() && !total.empty(); }
   bool hasSetCode() const { return !setCode.empty(); }
-  bool hasIdentity() const { return hasCollector() && hasSetCode(); }
+  bool hasIdentity() const { return !number.empty() && !setCode.empty(); }
 
   std::string identityKey() const;
   std::string display() const;

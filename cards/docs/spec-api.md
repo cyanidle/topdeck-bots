@@ -27,6 +27,12 @@ cardscan <input.(jpg|png|mp4|mov|...)> [options]
   --no-title            отключить fallback по названию карты
   --probe-card <file>   прогнать OCR по готовому кропу карты (отладка)
   --compare <a> <b>     сравнить два кропа (pHash и цветовая сигнатура)
+  --parse <text>        как разбирается строка коллекционера (отладка)
+  --reads <file>        пересобрать отчёт из таймлайна reads.txt без OCR
+  --phash-index <file>  идентифицировать карты по индексу картинок (см. spec-scryfall-index)
+  --build-index <meta.jsonl> <out.tsv>  собрать индекс pHash из кеша Scryfall
+  --lookup <index.tsv> <image>          ранжировать карты индекса для картинки
+  --ocr-bench <meta.jsonl> [--samples n]  сравнить варианты OCR на синтетических строках
   --verbose             подробный лог в stderr
 ```
 
@@ -103,7 +109,7 @@ cardscan <input.(jpg|png|mp4|mov|...)> [options]
 | `set` | код сета как напечатан (`DDS`, `C18`, `TMT`); сравнивать с `cards.set_code` в БД без учёта регистра |
 | `collector` | `number/total` как напечатано (с ведущими нулями, если их прочитали) |
 | `identity` | `SET:number` (или `N:NAME` для fallback по названию); пусто, если не распознано |
-| `identified_by` | `codes` или `name` или `null` |
+| `identified_by` | `codes`, `index` (по картинке, см. `spec-scryfall-index.md`), `name` или `null` |
 | `confidence` | агрегированная уверенность 0…1 (не вероятность модели, а согласие чтений) |
 | `phash` | pHash кропа карты (16 hex-символов) — для отладки и внешней склейки |
 | `quad` | четыре точки контура карты в координатах исходного изображения/кадра |

@@ -82,7 +82,7 @@ CardOcr::~CardOcr() {
   }
 }
 
-CollectorLayout locateCollector(const cv::Mat &cardWarped) {
+CollectorLayout locateCollector(const cv::Mat &cardWarped, const OcrParams &p) {
   CollectorLayout layout;
   if (cardWarped.empty()) return layout;
   cv::Mat gray;
@@ -92,8 +92,10 @@ CollectorLayout locateCollector(const cv::Mat &cardWarped) {
     gray = cardWarped;
   }
 
-  const cv::Rect search(static_cast<int>(gray.cols * 0.005), static_cast<int>(gray.rows * 0.72),
-                        static_cast<int>(gray.cols * 0.52), static_cast<int>(gray.rows * 0.28));
+  const cv::Rect search(static_cast<int>(gray.cols * 0.005),
+                        static_cast<int>(gray.rows * p.collectorRoiTop),
+                        static_cast<int>(gray.cols * p.collectorRoiWidth),
+                        static_cast<int>(gray.rows * (1.0 - p.collectorRoiTop)));
   const cv::Rect roi = search & cv::Rect(0, 0, gray.cols, gray.rows);
   if (roi.width < 40 || roi.height < 20) return layout;
 
@@ -155,7 +157,7 @@ CollectorLayout locateCollector(const cv::Mat &cardWarped) {
     if (group.size() < 3) continue;
     cv::Rect box = group.front();
     for (const auto &g : group) box |= g;
-    if (box.x > binary.cols * 0.25) continue;
+    if (box.x > binary.cols * p.collectorMaxStartX) continue;
     lineBoxes.push_back(box);
   }
   if (std::getenv("CARDSCAN_DEBUG_OCR")) {
@@ -171,20 +173,44 @@ CollectorLayout locateCollector(const cv::Mat &cardWarped) {
   std::sort(lineBoxes.begin(), lineBoxes.end(),
             [](const cv::Rect &a, const cv::Rect &b) { return a.y > b.y; });
 
+  // One printed line often yields several glyph groups (a set symbol or a wide gap splits
+  // them), so glue groups that share a vertical band before picking the line to read.
+  std::vector<cv::Rect> mergedLines;
+  for (const cv::Rect &box : lineBoxes) {
+    bool glued = false;
+    for (cv::Rect &line : mergedLines) {
+      const int overlap =
+          std::min(line.y + line.height, box.y + box.height) - std::max(line.y, box.y);
+      if (overlap > 0.5 * std::min(line.height, box.height)) {
+        line |= box;
+        glued = true;
+        break;
+      }
+    }
+    if (!glued) mergedLines.push_back(box);
+  }
+  std::sort(mergedLines.begin(), mergedLines.end(),
+            [](const cv::Rect &a, const cv::Rect &b) { return a.y > b.y; });
+
   std::vector<cv::Rect> chosen;
-  chosen.push_back(lineBoxes.front());
-  if (lineBoxes.size() > 1) {
-    const cv::Rect &first = lineBoxes[0];
-    const cv::Rect &second = lineBoxes[1];
-    const int gap = second.y + second.height - first.y;
-    if (gap >= 0 && gap <= static_cast<int>(first.height * 3.5)) chosen.push_back(second);
+  chosen.push_back(mergedLines.front());
+  for (size_t i = 1; i < mergedLines.size() && chosen.size() < 2; ++i) {
+    const cv::Rect &first = chosen.front();
+    const cv::Rect &cand = mergedLines[i];
+    if (cand.y + cand.height / 2 >= first.y + first.height / 2) continue;
+    if (cand.y < first.y - static_cast<int>(first.height * 3.5)) continue;
+    chosen.push_back(cand);
   }
 
   const cv::Rect &anchorLine = chosen.front();
   const int lineHeight = std::max(8, anchorLine.height);
-  const int blockX = std::max(0, static_cast<int>(binary.cols * 0.008));
-  const int blockW = static_cast<int>(binary.cols * 0.46);
-  cv::Rect block(blockX, anchorLine.y - 2 * lineHeight, blockW, static_cast<int>(3.8 * lineHeight));
+  cv::Rect textUnion = chosen.front();
+  for (const auto &line : chosen) textUnion |= line;
+  // The warp is built from the detected quad, which can be shifted inside the card, so the
+  // block follows the located text instead of a fixed left-edge fraction.
+  const int padX = 3 * lineHeight;
+  cv::Rect block(textUnion.x - padX, anchorLine.y - 2 * lineHeight,
+                 textUnion.width + 2 * padX, static_cast<int>(3.8 * lineHeight));
   block &= cv::Rect(0, 0, binary.cols, binary.rows);
 
   layout.block = cv::Rect(
@@ -203,13 +229,22 @@ CollectorLayout locateCollector(const cv::Mat &cardWarped) {
     layout.lines.push_back(box);
   }
   layout.found = layout.block.width > 20 && layout.block.height > 12;
+  if (std::getenv("CARDSCAN_DEBUG_OCR")) {
+    std::fprintf(stderr, "[layout] found=%d block=%d,%d %dx%d lines=%zu\n",
+                 static_cast<int>(layout.found), layout.block.x, layout.block.y,
+                 layout.block.width, layout.block.height, layout.lines.size());
+    for (const auto &line : layout.lines) {
+      std::fprintf(stderr, "  line: %d,%d %dx%d\n", line.box.x, line.box.y, line.box.width,
+                   line.box.height);
+    }
+  }
   return layout;
 }
 
 cv::Mat CardOcr::prepare(const cv::Mat &gray, int mode, int upscale) {
   cv::Mat up;
   const cv::Size target(gray.cols * upscale, gray.rows * upscale);
-  cv::resize(gray, up, target, 0, 0, cv::INTER_CUBIC);
+  cv::resize(gray, up, target, 0, 0, cv::INTER_LANCZOS4);
   cv::Mat blurred;
   cv::GaussianBlur(up, blurred, cv::Size(0, 0), 1.1);
   cv::addWeighted(up, 1.6, blurred, -0.6, 0, up);
@@ -269,29 +304,30 @@ OcrRead CardOcr::readCard(const cv::Mat &cardWarped) {
     int regionId;
   };
   std::vector<Attempt> attempts;
-  const CollectorLayout layout = locateCollector(cardWarped);
+  const CollectorLayout layout = locateCollector(cardWarped, p_);
   if (layout.found) {
-    attempts.push_back({layout.block, 0, 6, 0});
-    if (!layout.lines.empty()) attempts.push_back({layout.lines[0].box, 0, 7, 2});
-    if (layout.lines.size() > 1) attempts.push_back({layout.lines[1].box, 0, 7, 1});
-    attempts.push_back({layout.block, 1, 6, 0});
-    if (!layout.lines.empty()) attempts.push_back({layout.lines[0].box, 1, 7, 2});
-    if (layout.lines.size() > 1) attempts.push_back({layout.lines[1].box, 1, 7, 1});
+    const cv::Rect *setLine = layout.lines.empty() ? nullptr : &layout.lines[0].box;
+    const cv::Rect *numberLine = layout.lines.size() > 1 ? &layout.lines[1].box : nullptr;
+    auto tightBox = [](const cv::Rect &line, double widthFactor) {
+      const int width = std::max(24, static_cast<int>(line.height * widthFactor));
+      return cv::Rect(line.x - line.height, line.y - line.height / 2, width, line.height * 2);
+    };
 
-    if (!layout.lines.empty()) {
-      const cv::Rect &line = layout.lines[0].box;
-      const int width = std::max(24, static_cast<int>(line.height * 6.5));
-      const cv::Rect tight(line.x - 2, line.y - line.height / 2, width,
-                           line.height * 2);
-      attempts.push_back({tight, 0, 8, 2});
-      attempts.push_back({tight, 0, 7, 2});
+    attempts.push_back({layout.block, 0, 6, 0});
+    if (numberLine) {
+      attempts.push_back({*numberLine, 0, 7, 1});
+      attempts.push_back({tightBox(*numberLine, 7.5), 0, 7, 1});
+      attempts.push_back({tightBox(*numberLine, 7.5), 0, 8, 1});
     }
-    if (layout.lines.size() > 1) {
-      const cv::Rect &line = layout.lines[1].box;
-      const int width = std::max(24, static_cast<int>(line.height * 5.0));
-      const cv::Rect tight(line.x - 2, line.y - line.height / 2, width, line.height * 2);
-      attempts.push_back({tight, 0, 7, 1});
+    if (setLine) attempts.push_back({*setLine, 0, 7, 2});
+    if (numberLine) attempts.push_back({*numberLine, 2, 7, 1});
+    if (setLine) {
+      attempts.push_back({*setLine, 2, 7, 2});
+      attempts.push_back({*setLine, 1, 7, 2});
     }
+    if (numberLine) attempts.push_back({*numberLine, 1, 7, 1});
+    if (setLine) attempts.push_back({tightBox(*setLine, 6.0), 0, 7, 2});
+    attempts.push_back({layout.block, 1, 6, 0});
   } else {
     attempts = {
         {regions_.collectorBlock, 0, 6, 0}, {regions_.collectorLine, 0, 6, 1},
@@ -306,7 +342,7 @@ OcrRead CardOcr::readCard(const cv::Mat &cardWarped) {
     if (used >= p_.maxAttemptsPerRead) break;
     const cv::Rect r = a.region & cv::Rect(0, 0, gray.cols, gray.rows);
     if (r.width < 8 || r.height < 6) continue;
-    const int upscale = std::clamp(static_cast<int>(std::lround(260.0 / r.height)), 2, 10);
+    const int upscale = std::clamp(static_cast<int>(std::lround(260.0 / r.height)), 2, 16);
     cv::Mat prepared = prepare(gray(r), a.mode, upscale);
     const std::string text = run(prepared, a.psm);
     if (!debugDir_.empty()) {
@@ -333,6 +369,17 @@ OcrRead CardOcr::readCard(const cv::Mat &cardWarped) {
     if (out) out << log;
   }
   return merged;
+}
+
+std::string CardOcr::readLineVariant(const cv::Mat &line, int mode, int psm, int upscale) {
+  if (!api_ || line.empty()) return {};
+  cv::Mat gray;
+  if (line.channels() == 3) {
+    cv::cvtColor(line, gray, cv::COLOR_BGR2GRAY);
+  } else {
+    gray = line;
+  }
+  return run(prepare(gray, mode, upscale), psm);
 }
 
 std::string CardOcr::readTitle(const cv::Mat &cardWarped) {

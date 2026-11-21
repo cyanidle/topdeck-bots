@@ -58,9 +58,11 @@ std::string cardJson(const CardResult &c, bool withTimeline) {
   os << "      \"rarity\": " << optionalString(c.rarity) << ",\n";
   os << "      \"name\": " << optionalString(c.name) << ",\n";
   os << "      \"identity\": " << optionalString(c.identity) << ",\n";
+  std::string identifiedBy = c.identifiedBy;
+  if (identifiedBy.empty() && c.identified) identifiedBy = c.identifiedByCodes ? "codes" : "name";
   os << "      \"identified\": " << (c.identified ? "true" : "false") << ",\n";
   os << "      \"identified_by\": "
-     << (c.identifiedByCodes ? "\"codes\"" : (c.identified ? "\"name\"" : "null")) << ",\n";
+     << (identifiedBy.empty() ? std::string("null") : "\"" + identifiedBy + "\"") << ",\n";
   os << "      \"confidence\": " << num(c.confidence) << ",\n";
   os << "      \"quality\": " << num(c.quality) << ",\n";
   os << "      \"hits\": " << c.hits << ",\n";

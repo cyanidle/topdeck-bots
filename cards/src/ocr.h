@@ -15,6 +15,9 @@ struct OcrParams {
   std::string language = "eng";
   std::string dataPath;
   int maxAttemptsPerRead = 10;
+  double collectorRoiTop = 0.72;
+  double collectorRoiWidth = 0.62;
+  double collectorMaxStartX = 0.45;
   std::vector<std::string> knownSetCodes;
 };
 
@@ -36,7 +39,7 @@ struct CollectorLayout {
 };
 
 CardRegions defaultRegions(const OcrParams &p);
-CollectorLayout locateCollector(const cv::Mat &cardWarped);
+CollectorLayout locateCollector(const cv::Mat &cardWarped, const OcrParams &p = OcrParams());
 
 class CardOcr {
  public:
@@ -52,6 +55,9 @@ class CardOcr {
 
   OcrRead readCard(const cv::Mat &cardWarped);
   std::string readTitle(const cv::Mat &cardWarped);
+
+  // Benchmark hook: reads one isolated collector-line crop with an explicit variant.
+  std::string readLineVariant(const cv::Mat &line, int mode, int psm, int upscale);
 
   void setDebugDir(const std::string &dir, const std::string &prefix = "ocr") {
     debugDir_ = dir;

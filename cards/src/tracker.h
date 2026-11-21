@@ -28,6 +28,7 @@ struct ReadSample {
   std::string rarity;
   std::string name;
   std::string hash;
+  std::string artHash;
   std::vector<cv::Point2f> quad;
 };
 

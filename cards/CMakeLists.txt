@@ -34,8 +34,10 @@ add_library(cardscan_core STATIC
   src/detector.cpp
   src/evidence.cpp
   src/geometry.cpp
+  src/hashindex.cpp
   src/identity.cpp
   src/ocr.cpp
+  src/ocrbench.cpp
   src/overlay.cpp
   src/phash.cpp
   src/report.cpp
