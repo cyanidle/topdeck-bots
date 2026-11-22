@@ -18,6 +18,8 @@ class SettingsFromEnvTest(unittest.TestCase):
     def test_bad_stride_fails_loudly(self):
         with self.assertRaises(ValueError):
             Settings.from_env(env_file="/nonexistent/.env", environ={"SCAN_STRIDE": "x"})
+        with self.assertRaises(ValueError):
+            Settings.from_env(env_file="/nonexistent/.env", environ={"SCAN_STRIDE": "0"})
 
     def test_token_is_redacted(self):
         settings = Settings.from_env(env_file="/nonexistent/.env",

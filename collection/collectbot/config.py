@@ -46,6 +46,8 @@ class Settings:
             settings.media_max_mb = int(raw["MEDIA_MAX_MB"])
         if raw.get("SCAN_STRIDE"):
             settings.scan_stride = int(raw["SCAN_STRIDE"])
+            if settings.scan_stride < 1:
+                raise ValueError(f"SCAN_STRIDE must be >= 1, got {settings.scan_stride}")
         return settings
 
     def redacted(self) -> dict[str, object]:
