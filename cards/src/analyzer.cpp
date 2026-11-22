@@ -542,26 +542,30 @@ std::string normalizeCollector(const std::string &collector) {
 
 bool acceptsIndexMatch(const std::vector<IndexMatch> &matches, const AnalyzerOptions &opt) {
   if (matches.empty()) return false;
-  if (matches[0].artDistance > opt.indexMaxDistance) return false;
-  if (matches[0].fullDistance > opt.indexMaxFullDistance) return false;
-  if (matches.size() > 1 &&
-      matches[1].artDistance - matches[0].artDistance < opt.indexMinMargin) {
-    return false;
-  }
+  if (matches[0].artDistance > opt.indexShortlistDistance) return false;
   return true;
 }
 
-// Only a keypoint match proves the two pictures show one card: the hash distances above are
-// too close between the same card under studio light and an unrelated card.
+// Only a keypoint match proves the two pictures show one card: the hash distances are too
+// close between the same card under studio light and an unrelated card, so the hash only
+// picks a shortlist and the best verified candidate wins.
 std::string verifiedIndexIdentity(const HashIndex &index, const cv::Mat &crop,
                                   const std::string &fullHash, const std::string &artHash,
                                   const AnalyzerOptions &opt) {
   if (index.empty() || fullHash.empty()) return {};
-  const std::vector<IndexMatch> matches = index.lookup(fullHash, artHash, 2);
+  const std::vector<IndexMatch> matches =
+      index.lookup(fullHash, artHash, opt.indexVerifyCandidates);
   if (!acceptsIndexMatch(matches, opt)) return {};
-  const ArtVerification verify = index.verifyArt(crop, matches[0]);
-  if (verify.inliers < opt.indexMinInliers) return {};
-  return matches[0].setCode + ":" + normalizeCollector(matches[0].collector);
+  int bestInliers = 0;
+  std::string best;
+  for (const auto &match : matches) {
+    const ArtVerification verify = index.verifyArt(crop, match);
+    if (verify.inliers <= bestInliers) continue;
+    bestInliers = verify.inliers;
+    best = match.setCode + ":" + normalizeCollector(match.collector);
+  }
+  if (bestInliers < opt.indexMinInliers) return {};
+  return best;
 }
 
 // One identity channel (collector line, artwork hash, title) and its strength.
@@ -739,33 +743,56 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
     if (!chosen) chosen = segment.items.front();
     std::string code = voteSetCode(codeVotes, opt.segmentNumberCodeTolerance);
 
-    // A number is only trustworthy when it was printed next to a set code that belongs to
-    // this card: mixing the code of one card with the number of the next one produced
-    // confident-looking but wrong identities.
-    std::vector<std::string> numbers;
-    std::vector<const ReadSample *> supporters;
-    for (const auto *item : segment.items) {
-      if (item->number.empty()) continue;
-      if (!item->code.empty() && !code.empty() &&
-          codeDistance(item->code, code) > opt.segmentNumberCodeTolerance) {
-        continue;
+    // The collector number is voted twice: first among the reads whose set code agrees with
+    // the segment code (precise, used whenever it has support), then among all reads (a card
+    // whose set code is read three different ways still shows the same number). The second,
+    // looser vote is only used when the strict one finds nothing, and the set is then
+    // resolved by the index, which knows the real (set, number) pairs.
+    struct NumberVote {
+      std::string number;
+      int support = 0;
+      std::vector<const ReadSample *> owners;
+    };
+    auto voteNumber = [&](bool requireCodeMatch) {
+      std::vector<std::string> numbers;
+      NumberVote vote;
+      for (const auto *item : segment.items) {
+        if (item->number.empty()) continue;
+        if (requireCodeMatch && !item->code.empty() && !code.empty() &&
+            codeDistance(item->code, code) > opt.segmentNumberCodeTolerance) {
+          continue;
+        }
+        numbers.push_back(item->number);
+        vote.owners.push_back(item);
       }
-      numbers.push_back(item->number);
-      supporters.push_back(item);
+      vote.number = voteDigits(numbers);
+      for (const auto *item : vote.owners) {
+        if (item->number == vote.number) ++vote.support;
+      }
+      return vote;
+    };
+    NumberVote voted = voteNumber(true);
+    bool haveNumber = !voted.number.empty() && voted.support >= opt.minNumberSupport &&
+                      voted.support >= opt.minNumberAgreement * voted.owners.size();
+    if (!haveNumber) {
+      NumberVote loose = voteNumber(false);
+      const int looseMinimum = std::max(3, opt.minNumberSupport);
+      if (!loose.number.empty() && loose.support >= looseMinimum) {
+        voted = loose;
+        haveNumber = true;
+      }
     }
     CardResult card;
     card.trackId = nextId++;
     card.setCode = code;
-    const std::string number = voteDigits(numbers);
-    int numberSupport = 0;
+    const std::string number = voted.number;
+    const int numberSupport = voted.support;
+    const std::vector<const ReadSample *> &supporters = voted.owners;
     const ReadSample *numberSource = nullptr;
     for (const auto *item : supporters) {
       if (item->number != number) continue;
-      ++numberSupport;
       if (!numberSource || item->quality > numberSource->quality) numberSource = item;
     }
-    const bool haveNumber = !number.empty() && numberSupport >= opt.minNumberSupport &&
-                            numberSupport >= opt.minNumberAgreement * supporters.size();
     if (std::getenv("CARDSCAN_DEBUG_COUNT")) {
       std::fprintf(stderr, "[seg %.2f-%.2f] items=%zu code=%s supporters=%zu num=%s support=%d\n",
                    segment.items.front()->ts, segment.items.back()->ts, segment.items.size(),
@@ -783,18 +810,20 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
       card.rarity = numberSource ? numberSource->rarity : "";
       // Prefer the code spelling that was read together with the winning number.
       std::map<std::string, double> codeFromNumber;
+      std::vector<std::string> readCodes;
       for (const auto *item : supporters) {
         if (item->number != number || item->code.empty()) continue;
         codeFromNumber[item->code] += 0.2 + item->quality;
+        readCodes.push_back(item->code);
       }
       if (!codeFromNumber.empty()) {
         card.setCode = voteSetCode(codeFromNumber, opt.segmentNumberCodeTolerance);
       }
-    }
-    if (index && !index->empty() && haveNumber) {
-      const std::string snapped =
-          index->setWithNumber(card.setCode, number, opt.setSnapDistance);
-      if (!snapped.empty()) card.setCode = snapped;
+      if (index && !index->empty()) {
+        const std::string snapped =
+            index->setWithNumber(readCodes, number, opt.setSnapDistance);
+        if (!snapped.empty()) card.setCode = snapped;
+      }
     }
     const ReadSample *meta = numberSource ? numberSource : chosen;
     card.language = meta ? meta->language : "";

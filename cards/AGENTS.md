@@ -13,7 +13,12 @@ cmake --build cards/build -j
 ctest --test-dir cards/build --output-on-failure        # юнит-тесты C++
 python3 cards/python/test_cardscan.py                   # ctypes-смоук
 CARDSCAN_SAMPLE_IMAGE=~/Documents/cards.jpg cards/tests/run_golden.sh
+python3 cards/tools/scryfall_index.py --stats           # состояние индекса картинок
 ```
+
+Индекс картинок (`cards/data/scryfall/`, в git не попадает) ведёт
+`cards/tools/scryfall_index.py` — см. `docs/spec-scryfall-index.md`. Без индекса
+`run_golden.sh` проходит, но гейт идентичностей скипается.
 
 Все проверки должны быть зелёными перед коммитом. Отладочные артефакты — только в
 `/tmp` или `--debug-dir`, в репозиторий не попадают (`build/` в `.gitignore`).

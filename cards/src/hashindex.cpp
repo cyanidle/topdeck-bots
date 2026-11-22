@@ -199,22 +199,30 @@ std::vector<IndexMatch> HashIndex::findByName(const std::string &name, int topK)
   return matches;
 }
 
-std::string HashIndex::setWithNumber(const std::string &code, const std::string &number,
-                                     double maxDistance) const {
-  if (number.empty()) return {};
+std::string HashIndex::setWithNumber(const std::vector<std::string> &codes,
+                                     const std::string &number, double maxDistance) const {
+  if (number.empty() || codes.empty()) return {};
   const std::string wanted = normalizeNumber(number);
   std::string best;
   double bestDistance = maxDistance + 1e-9;
   for (const auto &entry : entries_) {
     if (normalizeNumber(entry.collector) != wanted) continue;
-    if (entry.setCode == code) return entry.setCode;
-    const double distance = codeDistance(code, entry.setCode);
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      best = entry.setCode;
+    for (const auto &code : codes) {
+      if (code.empty()) continue;
+      if (entry.setCode == code) return entry.setCode;
+      const double distance = codeDistance(code, entry.setCode);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = entry.setCode;
+      }
     }
   }
   return best;
+}
+
+std::string HashIndex::setWithNumber(const std::string &code, const std::string &number,
+                                     double maxDistance) const {
+  return setWithNumber(std::vector<std::string>{code}, number, maxDistance);
 }
 
 bool buildHashIndex(const std::string &metaPath, const std::string &outPath) {

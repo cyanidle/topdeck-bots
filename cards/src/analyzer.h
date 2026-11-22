@@ -49,14 +49,13 @@ struct AnalyzerOptions {
   int hashMergeDistance = 16;
   double hashMergeGapSeconds = 0.5;
   std::string phashIndexPath;
-  // The artwork hash only narrows the search: the same card photographed at an angle sits
-  // about as far from its reference image as an unrelated card does, so a match is accepted
-  // only after an actual keypoint match (indexMinInliers) against the reference artwork.
-  int indexMaxDistance = 16;
-  int indexMaxFullDistance = 22;
-  int indexMinMargin = 3;
-  int indexMinSupport = 2;
+  // The artwork hash only picks a shortlist: the same card photographed at an angle sits
+  // about as far from its reference image as an unrelated card does, so the identity is
+  // decided by a keypoint match (indexMinInliers) against the reference artwork.
+  int indexShortlistDistance = 22;
+  int indexVerifyCandidates = 3;
   int indexMinInliers = 12;
+  int indexMinSupport = 2;
   std::string debugDir;
   std::string overlayPath;
   int debugFrameEvery = 30;

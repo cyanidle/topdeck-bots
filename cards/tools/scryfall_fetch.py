@@ -20,6 +20,7 @@ import os
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 API = "https://api.scryfall.com"
@@ -34,7 +35,7 @@ def curl_args(proxy: str = "") -> list[str]:
     return args
 
 
-def curl_json(url: str, retries: int = 3, proxy: str = "") -> dict:
+def curl_json(url: str, retries: int = 5, proxy: str = "") -> dict:
     for attempt in range(retries):
         result = subprocess.run(curl_args(proxy) + ["-H", "Accept: application/json", url],
                                 capture_output=True, text=True)
@@ -59,7 +60,7 @@ def complete_jpeg(path: Path) -> bool:
         return False
 
 
-def curl_file(url: str, path: Path, proxy: str = "", retries: int = 2) -> bool:
+def curl_file(url: str, path: Path, proxy: str = "", retries: int = 3) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     for attempt in range(retries):
         result = subprocess.run(curl_args(proxy) + ["-H", "Accept: image/jpeg", "-o", str(path),
@@ -101,53 +102,59 @@ def load_known(meta_path: Path) -> set[str]:
 
 
 def fetch_set(code: str, out: Path, delay: float, meta, known: set[str], size: str,
-              proxy: str = "", force: bool = False) -> tuple[int, int, int]:
+              proxy: str = "", force: bool = False,
+              workers: int = 4) -> tuple[int, int, int]:
     """Downloads one set; returns (written, failed, seen) so a caller can tell a complete set."""
     url = f"{API}/cards/search?q=e%3A{code}&unique=prints&order=set"
     written = 0
     failed = 0
     seen = 0
     seen_pages: set[str] = set()
-    while url and url not in seen_pages:
-        seen_pages.add(url)
-        # The API answers one page at a time: a stalled page silently truncates the set, so a
-        # page without a payload is reported as failed instead of ending the set quietly.
-        payload = curl_json(url, proxy=proxy)
-        if not payload.get("data"):
-            print(f"  ! failed page: {url}", file=sys.stderr, flush=True)
-            failed += 1
-            break
-        for card in payload.get("data", []):
-            card_id = card.get("id", "")
-            key = f"{card_id}:{size}"
-            seen += 1
-            if card_id and key in known and not force:
-                continue
-            url_small = image_url(card, size)
-            if not url_small:
-                continue
-            collector = str(card.get("collector_number", ""))
-            target = out / "images" / f"{card.get('set', code)}_{safe_name(collector)}.jpg"
-            if not curl_file(url_small, target, proxy):
-                print(f"  ! failed: {url_small}", file=sys.stderr, flush=True)
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        while url and url not in seen_pages:
+            seen_pages.add(url)
+            # The API answers one page at a time: a stalled page silently truncates the set, so
+            # a page without a payload is reported as failed instead of ending the set quietly.
+            payload = curl_json(url, proxy=proxy)
+            if not payload.get("data"):
+                print(f"  ! failed page: {url}", file=sys.stderr, flush=True)
                 failed += 1
-                continue
-            meta.write(json.dumps({
-                "size": size,
-                "set": str(card.get("set", code)).upper(),
-                "collector": collector,
-                "name": card.get("name", ""),
-                "id": card_id,
-                "path": str(target),
-            }, ensure_ascii=False) + "\n")
-            meta.flush()
-            if card_id:
-                known.add(key)
-            written += 1
-            if written % 50 == 0:
-                print(f"  {code}: {written} images", flush=True)
-            time.sleep(delay)
-        url = payload.get("next_page") or ""
+                break
+            pending = []
+            for card in payload.get("data", []):
+                seen += 1
+                card_id = card.get("id", "")
+                key = f"{card_id}:{size}"
+                if card_id and key in known and not force:
+                    continue
+                image_url_ = image_url(card, size)
+                if not image_url_:
+                    continue
+                collector = str(card.get("collector_number", ""))
+                target = out / "images" / f"{card.get('set', code)}_{safe_name(collector)}.jpg"
+                pending.append((pool.submit(curl_file, image_url_, target, proxy), card,
+                                card_id, key, collector, target))
+                time.sleep(delay)
+            for future, card, card_id, key, collector, target in pending:
+                if not future.result():
+                    print(f"  ! failed: {image_url(card, size)}", file=sys.stderr, flush=True)
+                    failed += 1
+                    continue
+                meta.write(json.dumps({
+                    "size": size,
+                    "set": str(card.get("set", code)).upper(),
+                    "collector": collector,
+                    "name": card.get("name", ""),
+                    "id": card_id,
+                    "path": str(target),
+                }, ensure_ascii=False) + "\n")
+                meta.flush()
+                if card_id:
+                    known.add(key)
+                written += 1
+                if written % 50 == 0:
+                    print(f"  {code}: {written} images", flush=True)
+            url = payload.get("next_page") or ""
     return written, failed, seen
 
 
@@ -158,6 +165,8 @@ def main() -> int:
     parser.add_argument("--delay", type=float, default=0.08, help="seconds between requests")
     parser.add_argument("--size", default="small", choices=["small", "normal", "large"],
                         help="Scryfall image size to cache")
+    parser.add_argument("--workers", type=int, default=4,
+                        help="parallel image downloads (the tunnel is slow per stream)")
     parser.add_argument("--proxy", default="",
                         help="curl proxy URL, e.g. socks5h://127.0.0.1:1080")
     parser.add_argument("--force", action="store_true",
@@ -175,7 +184,7 @@ def main() -> int:
         for code in [c.strip().lower() for c in args.sets.split(",") if c.strip()]:
             print(f"set {code} ...", flush=True)
             count, failed, seen = fetch_set(code, out, args.delay, meta, known, args.size,
-                                            args.proxy, args.force)
+                                            args.proxy, args.force, args.workers)
             print(f"set {code}: {count} new images, {failed} failed, {seen} cards", flush=True)
             total += count
     print(f"done: {total} new images, metadata in {meta_path}", flush=True)

@@ -231,7 +231,8 @@ def hash_paths(conn: sqlite3.Connection, paths: list[str], binary: Path, batch: 
 
 
 def fetch_sets(conn: sqlite3.Connection, codes: list[str], out: Path, size: str,
-               delay: float, limit: int = 0, proxy: str = "", force: bool = False) -> int:
+               delay: float, limit: int = 0, proxy: str = "", force: bool = False,
+               workers: int = 4) -> int:
     """Downloads prints that the cache is missing; resumable, same as the fetcher alone."""
     if not codes:
         return 0
@@ -243,7 +244,7 @@ def fetch_sets(conn: sqlite3.Connection, codes: list[str], out: Path, size: str,
         for code in codes[:limit or len(codes)]:
             log(f"set {code.lower()} ...")
             written_count, failed, seen = scryfall_fetch.fetch_set(
-                code.lower(), out, delay, meta, known, size, proxy, force)
+                code.lower(), out, delay, meta, known, size, proxy, force, workers)
             written += written_count
             log(f"set {code.lower()}: {written_count} images, {failed} failed, {seen} cards")
             conn.execute("BEGIN IMMEDIATE")
@@ -346,7 +347,8 @@ def run_once(args, conn: sqlite3.Connection, full_pass: bool = True) -> None:
     absorb()
     publish()
 
-    if full_pass and not args.no_fetch:
+    # One `--fetch-limit` set per pass: the index must stay publishable while it downloads.
+    if not args.no_fetch:
         missing = []
         if args.sets:
             for code in args.sets:
@@ -359,17 +361,17 @@ def run_once(args, conn: sqlite3.Connection, full_pass: bool = True) -> None:
         if missing:
             log(f"fetching sets: {','.join(missing[:args.fetch_limit or len(missing)])}")
             fetch_sets(conn, missing, out.parent, args.size, args.delay, args.fetch_limit,
-                       args.proxy, args.force)
+                       args.proxy, args.force, args.workers)
             absorb()
             publish()
 
-        if args.reconcile or args.sets:
+        if full_pass and (args.reconcile or args.sets):
             incomplete = reconcile(conn, None, args.proxy)
             if incomplete:
                 log("refreshing incomplete sets: "
                     + ",".join(incomplete[:args.fetch_limit or len(incomplete)]))
                 fetch_sets(conn, incomplete, out.parent, args.size, args.delay,
-                           args.fetch_limit, args.proxy, args.force)
+                           args.fetch_limit, args.proxy, args.force, args.workers)
                 absorb()
                 publish()
 
@@ -393,6 +395,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--force", action="store_true",
                         help="re-download cached images (e.g. after switching --size)")
     parser.add_argument("--batch", type=int, default=500, help="images per hashing batch")
+    parser.add_argument("--workers", type=int, default=4,
+                        help="parallel image downloads (the tunnel is slow per stream)")
     parser.add_argument("--fetch-limit", type=int, default=0,
                         help="download at most N sets per pass (0 = all)")
     parser.add_argument("--limit", type=int, default=0, help="hash at most N images this pass")

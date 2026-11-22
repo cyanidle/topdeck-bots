@@ -40,6 +40,8 @@ class HashIndex {
   ArtVerification verifyArt(const cv::Mat &card, const IndexMatch &match) const;
   // The index knows which (set, number) pairs exist, so a misread set code ("TRTT" for
   // "TMT") can be resolved by asking which nearby set actually has that collector number.
+  std::string setWithNumber(const std::vector<std::string> &codes, const std::string &number,
+                            double maxDistance) const;
   std::string setWithNumber(const std::string &code, const std::string &number,
                             double maxDistance) const;
 
