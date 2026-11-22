@@ -135,9 +135,9 @@ cards/build/cardscan --lookup cards/data/scryfall/phash.tsv /tmp/crop.jpg
 | вход | результат |
 |---|---|
 | `cards.jpg` | `DDS:51` — `codes`, confidence 0.78 |
-| `cards.mp4` | 10 карт, 7 идентифицированы: `DDS:51` (codes+index), `FIN:180`, `WAR:149`, `HOB:82`, `TMT:67` (codes+index), `C18:158`, `MSH:97`; ложных идентичностей нет (3 карты остались `unknown`) |
+| `cards.mp4` | 13 карт, 7 идентифицированы: `DDS:51` (codes+index), `FIN:180` (codes), `WAR:149` (codes+index), `AKH:187` (codes), `HOB:82` (codes), `TMT:67` (index), `MSH:97` (codes+index); показы «The Ten Rings» и «Rampaging Baloths» в отражающей обложке читают только чужую строку коллекционера — обе `unknown` (6 карт `unknown`) |
 | клип TMT (16.5–20 с) | `TMT:67` by index (карта в зелёной обложке — `unknown`) |
-| клип C18 | `C18:158` by codes (было ложное `DDS:20`) |
+| клип C18 (23.5–26.5 с) | 2 карты, обе `unknown`: показ под блик-обложкой читает чужую строку, канал codes воздерживается (раньше давал ложное `DDS:20`, затем ложное `C18:158`) |
 | клип WAR/AKH | `WAR:149` by codes |
 | `A B A` фикстура | 3 карты: `DDS:51`, `WAR:149`, `DDS:51` |
 | `A _ A` фикстура | 2 карты: `DDS:51`, `DDS:51` |
