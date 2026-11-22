@@ -167,6 +167,14 @@ def entry_row(entry: CollectionEntry) -> list[InlineKeyboardButton]:
     ]
 
 
+def scan_keyboard(entries: list[CollectionEntry]) -> InlineKeyboardMarkup | None:
+    # A stack scan ends with a long list where anonymous +/- rows cannot be tied to their
+    # card, so the buttons are only kept for a single-entry result where they are unambiguous.
+    if len(entries) != 1:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=[entry_row(entries[0])])
+
+
 def _ensure_user(message: Message) -> int | None:
     user = message.from_user
     if user is None or user.is_bot:
@@ -472,15 +480,16 @@ async def _apply_scan(placeholder: Message, user_id: int, report: dict) -> None:
                      "а не в чужую карту.")
     if not parts:
         parts.append("Карт не нашёл — пришли снимок, где видна карточка целиком.")
+    if len(entries) > 1:
+        parts.append("Ошибся в пачке — убери копию: /sub TMT:67, запись целиком: /del TMT:67.")
     text = "\n\n".join(parts)
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[entry_row(entry) for entry in entries[:20]])
+    keyboard = scan_keyboard(entries)
     try:
-        await placeholder.edit_text(text, parse_mode="HTML",
-                                    reply_markup=keyboard if entries else None)
+        await placeholder.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     except Exception:
         log.exception("scan result edit failed", extra={"user": user_id})
         with contextlib.suppress(Exception):
-            await placeholder.answer(text, parse_mode="HTML")
+            await placeholder.answer(text, parse_mode="HTML", reply_markup=keyboard)
 
 
 async def _resolve_quiet(set_code: str, number: str) -> Card | None:

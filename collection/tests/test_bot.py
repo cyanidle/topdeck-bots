@@ -8,7 +8,7 @@ from aiogram.types import Animation, Chat, Document, Message, PhotoSize, Video, 
 from topbot.models import Card
 
 from collectbot.bot import classify_media, entry_line, fit_lines, media_info, media_meta, \
-    parse_callback, render_collection
+    parse_callback, render_collection, scan_keyboard
 from collectbot.models import CollectionEntry
 
 
@@ -134,6 +134,19 @@ class ParseCallbackTest(unittest.TestCase):
         self.assertIsNone(parse_callback("del:y"))
         self.assertIsNone(parse_callback("other:1"))
         self.assertIsNone(parse_callback(""))
+
+
+class ScanKeyboardTest(unittest.TestCase):
+    def test_single_entry_gets_buttons(self):
+        board = scan_keyboard([entry(1, "TMT", "67", 1)])
+        self.assertIsNotNone(board)
+        self.assertEqual(len(board.inline_keyboard), 1)
+        self.assertEqual([button.text for button in board.inline_keyboard[0]],
+                         ["➖", "➕", "🗑"])
+
+    def test_stack_scan_has_no_buttons(self):
+        self.assertIsNone(scan_keyboard([]))
+        self.assertIsNone(scan_keyboard([entry(1, "TMT", "67", 1), entry(2, "WAR", "149", 1)]))
 
 
 class FitLinesTest(unittest.TestCase):
