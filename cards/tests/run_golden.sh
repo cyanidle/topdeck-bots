@@ -4,7 +4,9 @@
 #   CARDSCAN_SAMPLE_IMAGE=~/Documents/cards.jpg \
 #   CARDSCAN_SAMPLE_VIDEO=~/Documents/cards.mp4 cards/tests/run_golden.sh
 #
-# Both files are optional: a missing file skips its check.
+# Missing files skip their check. The default run stays cheap: the detector is only run on a
+# handful of frames per card (run_frame_check.sh) instead of the whole feed. Set
+# CARDSCAN_FULL=1 to also run the whole feed through the production path (minutes).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,9 +40,18 @@ else
   echo "skip image: $image not found"
 fi
 
-if [[ -f "$video" ]]; then
-  "$bin" "$video" --json "$tmp/video.json" >/dev/null
-  python3 - "$tmp/video.json" <<'PY'
+if [[ -x "$here/run_frame_check.sh" ]]; then
+  CARDSCAN_BIN="$bin" CARDSCAN_SAMPLE_VIDEO="$video" "$here/run_frame_check.sh"
+fi
+
+if [[ -x "$here/run_duplicate_check.sh" ]]; then
+  CARDSCAN_BIN="$bin" CARDSCAN_SAMPLE_VIDEO="$video" "$here/run_duplicate_check.sh"
+fi
+
+if [[ "${CARDSCAN_FULL:-0}" == "1" ]]; then
+  if [[ -f "$video" ]]; then
+    "$bin" "$video" --json "$tmp/video.json" >/dev/null
+    python3 - "$tmp/video.json" <<'PY'
 import json, sys
 report = json.load(open(sys.argv[1]))
 assert report["type"] == "video", report
@@ -51,18 +62,14 @@ assert report["identified"] >= 3, report["identified"]
 print("video ok: cards=%d identified=%d reads=%d/%d"
       % (report["count"], report["identified"], report["ocr_reads_with_identity"], report["ocr_reads"]))
 PY
+  else
+    echo "skip video: $video not found"
+  fi
+  if [[ -x "$here/run_identity_check.sh" ]]; then
+    CARDSCAN_BIN="$bin" CARDSCAN_SAMPLE_VIDEO="$video" "$here/run_identity_check.sh"
+  fi
 else
-  echo "skip video: $video not found"
+  echo "skip full-feed checks (set CARDSCAN_FULL=1 to run them)"
 fi
 
 echo "golden checks passed"
-
-if [[ -x "$here/run_identity_check.sh" ]]; then
-  CARDSCAN_BIN="$bin" \
-  CARDSCAN_SAMPLE_VIDEO="$video" "$here/run_identity_check.sh"
-fi
-
-if [[ -x "$here/run_duplicate_check.sh" ]]; then
-  CARDSCAN_BIN="$bin" \
-  CARDSCAN_SAMPLE_VIDEO="$video" "$here/run_duplicate_check.sh"
-fi

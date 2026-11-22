@@ -10,6 +10,7 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -29,6 +30,55 @@ namespace cardscan {
 namespace {
 
 constexpr double kCardAspect = 63.0 / 88.0;
+
+// Where the presented card ends inside the crop. The card's bottom border is a dark band; when
+// another card lies under this one, the band is followed by that card's bright body and its
+// collector line sits right there. So the content ends where the brightness rises again under
+// the border, which keeps the neighbour's line out of the OCR search.
+double contentBottomFromBorder(const cv::Mat &crop, double fallback, double riseRatio) {
+  if (crop.empty()) return fallback;
+  cv::Mat gray;
+  if (crop.channels() == 3) {
+    cv::cvtColor(crop, gray, cv::COLOR_BGR2GRAY);
+  } else {
+    gray = crop;
+  }
+  const int x0 = static_cast<int>(gray.cols * 0.08);
+  const int x1 = static_cast<int>(gray.cols * 0.92);
+  if (x1 - x0 < 20) return fallback;
+  const auto rowMean = [&](int y) {
+    return cv::mean(gray(cv::Rect(x0, y, x1 - x0, 1)))[0];
+  };
+  const double base = std::clamp(fallback, 0.4, 1.0);
+  const int bodyStart = static_cast<int>(gray.rows * base * 0.80);
+  const int bodyEnd = static_cast<int>(gray.rows * base * 0.94);
+  double body = 0.0;
+  int bodyRows = 0;
+  for (int y = bodyStart; y < bodyEnd && y < gray.rows; ++y) {
+    body += rowMean(y);
+    ++bodyRows;
+  }
+  if (bodyRows == 0) return fallback;
+  body /= bodyRows;
+  if (body < 40.0) return fallback;
+  const double darkLimit = body * 0.6;
+  int border = -1;
+  for (int y = bodyEnd; y < gray.rows; ++y) {
+    if (rowMean(y) < darkLimit) {
+      border = y;
+      break;
+    }
+  }
+  if (border < 0) return fallback;
+  const double riseLimit = darkLimit + riseRatio * (body - darkLimit);
+  for (int y = border + 2; y < gray.rows; ++y) {
+    if (rowMean(y) <= riseLimit) continue;
+    const double found = static_cast<double>(y) / gray.rows;
+    if (std::abs(found - fallback) > 0.12) return fallback;
+    return found;
+  }
+  return fallback;
+}
 
 std::string hashCrop(const cv::Mat &crop) { return perceptualHash(crop); }
 
@@ -50,6 +100,7 @@ double qualityOf(const cv::Mat &crop, const Detection &d, cv::Size frameSize) {
 struct VerifiedCandidate {
   Detection detection;
   cv::Mat crop;
+  double contentBottom = 1.0;
   double quality = 0.0;
   CardEvidence evidence;
   SerialEvidence serial;
@@ -95,6 +146,13 @@ std::vector<VerifiedCandidate> verifyCandidates(const cv::Mat &frame,
                                                 const AnalyzerOptions &opt,
                                                 int frameIndex = -1) {
   const CardRegions regions = defaultRegions(opt.ocr);
+  // The crop is the expanded quad, so the card itself ends at this fraction of its height;
+  // everything below is table or the card lying behind it. A line located below this boundary
+  // may belong to that other card, so such reads need art confirmation (see buildCardsFromReads).
+  const auto contentBottom = [](double dyTop, double bottom) {
+    return (1.0 + dyTop) / (1.0 + dyTop + bottom);
+  };
+  constexpr double kTopMargin = 0.015;  // dyTop as a fraction of the quad height
   std::vector<VerifiedCandidate> candidates;
   for (const auto &d : detections) {
     if (!allCornersInside(d.quad, frame.size(), 2.f)) continue;
@@ -119,6 +177,12 @@ std::vector<VerifiedCandidate> verifyCandidates(const cv::Mat &frame,
       if (serial.score <= v.serial.score) continue;
       v.crop = crop;
       v.serial = serial;
+    }
+    v.contentBottom = contentBottom(kTopMargin, bottom);
+    v.contentBottom = contentBottomFromBorder(v.crop, v.contentBottom, opt.contentRiseRatio);
+    if (std::getenv("CARDSCAN_DEBUG_COUNT")) {
+      std::fprintf(stderr, "cand f%d bottom=%.3f contentBottom=%.3f serial=%.2f\n", frameIndex,
+                   bottom, v.contentBottom, v.serial.score);
     }
     v.quality = qualityOf(v.crop, d, frame.size());
     v.evidence = analyzeCard(v.crop);
@@ -163,6 +227,18 @@ std::vector<VerifiedCandidate> verifyCandidates(const cv::Mat &frame,
 bool looksLikeCard(const VerifiedCandidate &v, const AnalyzerOptions &opt) {
   if (v.serial.accepted) return true;
   return structuralOf(v.evidence) >= opt.minStructuralContrast && v.textRuns >= opt.strongTextRuns;
+}
+
+// The held-up card is the one that fills the frame; the score ranking also likes a sharp
+// neighbour card, which used to win the read and identify the wrong card.
+const VerifiedCandidate *presentedCandidate(const std::vector<VerifiedCandidate> &candidates,
+                                            const AnalyzerOptions &opt) {
+  const VerifiedCandidate *picked = nullptr;
+  for (const auto &candidate : candidates) {
+    if (!looksLikeCard(candidate, opt)) continue;
+    if (!picked || candidate.detection.area > picked->detection.area) picked = &candidate;
+  }
+  return picked;
 }
 
 const TrackRead *bestIdentityRead(const Track &t) {
@@ -478,7 +554,9 @@ std::string voteDigits(const std::vector<std::string> &values) {
   size_t length = 0;
   int bestCount = -1;
   for (const auto &vote : lengthVotes) {
-    if (vote.second > bestCount) {
+    // A tie means the same number read with and without its leading digit(s); the longer read
+    // carries more information, and the short one is normally a truncated leading digit.
+    if (vote.second > bestCount || (vote.second == bestCount && vote.first > length)) {
       bestCount = vote.second;
       length = vote.first;
     }
@@ -681,9 +759,12 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
   struct Segment {
     std::vector<const ReadSample *> items;
     std::map<std::string, double> codeVotes;
+    std::map<std::string, int> codeCounts;
     int incompatibleRun = 0;
+    double lastMajorityTs = 0.0;
   };
   std::vector<Segment> segments;
+  std::set<std::string> knownSets(opt.ocr.knownSetCodes.begin(), opt.ocr.knownSetCodes.end());
 
   auto majorityCode = [](const Segment &segment) {
     std::string best;
@@ -699,34 +780,70 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
 
   for (const auto *sample : samples) {
     bool startNew = segments.empty();
+    std::string majority;
     if (!startNew) {
       Segment &current = segments.back();
+      majority = majorityCode(current);
       const double gap = sample->ts - current.items.back()->ts;
       if (gap > opt.segmentGapSeconds ||
           sample->ts - current.items.front()->ts > opt.maxSegmentSeconds) {
         startNew = true;
       } else {
-        const std::string majority = majorityCode(current);
         const bool incompatible =
             !majority.empty() && !sample->code.empty() &&
             codeDistance(majority, sample->code) > opt.segmentCodeDistance;
+        if (std::getenv("CARDSCAN_DEBUG_COUNT")) {
+          std::fprintf(stderr,
+                       "  segstep ts=%.2f code=%s majority=%s dist=%.2f run=%d lastMaj=%.2f\n",
+                       sample->ts, sample->code.c_str(), majority.c_str(),
+                       sample->code.empty() || majority.empty()
+                           ? 0.0
+                           : codeDistance(majority, sample->code),
+                       current.incompatibleRun, current.lastMajorityTs);
+        }
         if (incompatible) {
           ++current.incompatibleRun;
           if (current.incompatibleRun >= opt.segmentIncompatibleRun) startNew = true;
         } else {
           current.incompatibleRun = 0;
         }
+        // The shows of two different cards can be separated by frames where neither line is
+        // readable, so no incompatible-code run builds up: a cleanly read known set code far
+        // from the majority then starts a new show once the majority went silent for a gap.
+        // The majority must be backed by at least two reads: a single-read "majority" is one
+        // lucky frame, and a garbage code that happens to spell a known set would otherwise
+        // cut a show in half.
+        if (!startNew && !majority.empty() && !sample->code.empty() &&
+            current.codeCounts[majority] >= 2 &&
+            knownSets.count(sample->code) > 0 &&
+            codeDistance(majority, sample->code) > opt.segmentShowDistance &&
+            sample->ts - current.lastMajorityTs > opt.segmentGapSeconds) {
+          startNew = true;
+        }
       }
     }
     if (startNew) {
       Segment segment;
       segment.items.push_back(sample);
-      if (!sample->code.empty()) segment.codeVotes[sample->code] += 0.2 + sample->quality;
+      segment.lastMajorityTs = sample->ts;
+      if (!sample->code.empty()) {
+        segment.codeVotes[sample->code] += 0.2 + sample->quality;
+        ++segment.codeCounts[sample->code];
+      }
       segments.push_back(std::move(segment));
     } else {
       Segment &current = segments.back();
       current.items.push_back(sample);
-      if (!sample->code.empty()) current.codeVotes[sample->code] += 0.2 + sample->quality;
+      if (!sample->code.empty()) {
+        current.codeVotes[sample->code] += 0.2 + sample->quality;
+        ++current.codeCounts[sample->code];
+        const std::string after = majorityCode(current);
+        if (after != majority ||
+            (!majority.empty() &&
+             codeDistance(majority, sample->code) <= opt.segmentShowDistance)) {
+          current.lastMajorityTs = sample->ts;
+        }
+      }
     }
   }
 
@@ -789,7 +906,9 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
                       voted.support >= opt.minNumberAgreement * voted.owners.size();
     if (!haveNumber) {
       NumberVote loose = voteNumber(false);
-      if (!loose.number.empty() && loose.support >= opt.minNumberSupportLoose) {
+      const bool supported = loose.support >= opt.minNumberSupportLoose &&
+                             loose.support >= opt.minNumberAgreement * loose.owners.size();
+      if (!loose.number.empty() && supported) {
         voted = loose;
         haveNumber = true;
       }
@@ -805,10 +924,61 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
       if (item->number != number) continue;
       if (!numberSource || item->quality > numberSource->quality) numberSource = item;
     }
+    // The printed line names the card only when the winning set code and number were read
+    // together at least twice: a number that appeared once next to its set code and
+    // otherwise bare (or next to unreadable codes) is one lucky frame, not an identity.
+    int pairSupport = 0;
+    if (haveNumber && !code.empty()) {
+      for (const auto *item : segment.items) {
+        if (item->code.empty() || item->number != number) continue;
+        if (codeDistance(item->code, code) <= opt.segmentNumberCodeTolerance) ++pairSupport;
+      }
+    }
+    // Two different cleanly-read set codes interleaved in one segment mean the strip saw two
+    // collector lines: the card under the presented one reads louder than the shown card's
+    // own glare-blinded line, so the codes channel must abstain and leave the verdict to the
+    // artwork and title channels.
+    bool mixedShows = false;
+    if (!knownSets.empty()) {
+      struct ShowSpan {
+        int count = 0;
+        double first = 0.0;
+        double last = 0.0;
+      };
+      std::map<std::string, ShowSpan> spans;
+      for (const auto *item : segment.items) {
+        if (item->code.empty() || knownSets.count(item->code) == 0) continue;
+        ShowSpan &span = spans[item->code];
+        if (span.count++ == 0) span.first = item->ts;
+        span.last = item->ts;
+      }
+      for (const auto &outer : spans) {
+        if (outer.second.count < 2) continue;
+        for (const auto &inner : spans) {
+          if (inner.first == outer.first || inner.second.count < 2) continue;
+          // Reads of one set strictly between reads of another set: the two lines alternate
+          // during one show. The next show's head reads land after the current show's last
+          // supporter (see the silence split), which is what keeps a show change out.
+          for (const auto *item : segment.items) {
+            if (item->code != inner.first) continue;
+            if (item->ts > outer.second.first && item->ts < outer.second.last) {
+              mixedShows = true;
+              break;
+            }
+          }
+          if (mixedShows) break;
+        }
+        if (mixedShows) break;
+      }
+    }
+    const bool codesUsable = haveNumber && !mixedShows && pairSupport >= opt.minNumberSupport;
     if (std::getenv("CARDSCAN_DEBUG_COUNT")) {
-      std::fprintf(stderr, "[seg %.2f-%.2f] items=%zu code=%s supporters=%zu num=%s support=%d\n",
+      std::fprintf(stderr,
+                   "[seg %.2f-%.2f] items=%zu code=%s supporters=%zu num=%s support=%d "
+                   "pair=%d mixed=%d\n",
                    segment.items.front()->ts, segment.items.back()->ts, segment.items.size(),
-                   code.c_str(), supporters.size(), number.c_str(), numberSupport);
+                   code.c_str(), supporters.size(), number.c_str(), numberSupport, pairSupport,
+                   mixedShows ? 1 : 0);
     }
     if (haveNumber) {
       card.number = number;
@@ -841,7 +1011,7 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
     card.language = meta ? meta->language : "";
     if (!haveNumber) card.rarity = chosen ? chosen->rarity : "";
     card.name = chosen ? chosen->name : "";
-    if (!card.setCode.empty() && haveNumber) {
+    if (!card.setCode.empty() && codesUsable) {
       card.identity = card.setCode + ":" + normalizeCollector(card.number);
       card.identified = true;
       card.identifiedByCodes = true;
@@ -866,7 +1036,7 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
     card.mergedTrackIds.push_back(card.trackId);
 
     Evidence codesEvidence;
-    if (!card.setCode.empty() && haveNumber) {
+    if (codesUsable) {
       codesEvidence.valid = true;
       codesEvidence.setCode = card.setCode;
       codesEvidence.number = card.number;
@@ -1051,7 +1221,7 @@ ImageResult Analyzer::analyzeImage(const std::string &path) {
         std::snprintf(prefix, sizeof(prefix), "cand_%02d", nextId);
         ocr->setDebugDir(opt_.debugDir, prefix);
       }
-      s.read = ocr->readCard(s.candidate.crop);
+      s.read = ocr->readCard(s.candidate.crop, s.candidate.contentBottom);
     }
     double rank = s.candidate.score;
     if (s.read.hasIdentity()) {
@@ -1266,7 +1436,7 @@ VideoResult Analyzer::analyzeVideo(const std::string &path) {
             std::snprintf(prefix, sizeof(prefix), "track_%04d_f%06d", trackId, index);
             ocr->setDebugDir(opt_.debugDir, prefix);
           }
-          const OcrRead read = ocr->readCard(crop);
+          const OcrRead read = ocr->readCard(crop, v.contentBottom);
           if (!read.raw.empty()) track->reads.push_back({index, ts, v.quality, read});
         }
       }
@@ -1283,11 +1453,7 @@ VideoResult Analyzer::analyzeVideo(const std::string &path) {
         index % opt_.ocrStride == 0) {
       // The held-up card is the one that fills the frame; the score ranking also likes a
       // sharp neighbour card, which used to win the read and identify the wrong card.
-      const VerifiedCandidate *picked = nullptr;
-      for (const auto &candidate : candidates) {
-        if (!looksLikeCard(candidate, opt_)) continue;
-        if (!picked || candidate.detection.area > picked->detection.area) picked = &candidate;
-      }
+      const VerifiedCandidate *picked = presentedCandidate(candidates, opt_);
       if (picked) {
         const VerifiedCandidate &top = *picked;
         if (!opt_.debugDir.empty()) {
@@ -1295,7 +1461,7 @@ VideoResult Analyzer::analyzeVideo(const std::string &path) {
           std::snprintf(prefix, sizeof(prefix), "cand_f%06d", index);
           ocr->setDebugDir(opt_.debugDir, prefix);
         }
-        const OcrRead read = ocr->readCard(top.crop);
+        const OcrRead read = ocr->readCard(top.crop, top.contentBottom);
         if (!read.raw.empty()) {
           ++result.readsTotal;
           ReadSample sample;
@@ -1408,6 +1574,339 @@ VideoResult Analyzer::analyzeVideo(const std::string &path) {
   result.elapsedSeconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
   return result;
+}
+
+// The detector is the expensive half of the pipeline (a 30 s clip takes minutes), so it can
+// run once on the whole feed or on a handful of chosen frames and write one normalized card
+// rectangle per presentation. Checks and OCR runs then work on those few images.
+//
+// A presentation is a track of the tracker, so consecutive frames of one held-up card collapse
+// into one rectangle (the sharpest one) while the same card shown again later is a new track
+// and therefore a new rectangle.
+CropExtraction extractCardCrops(const std::string &videoPath, const std::string &outDir,
+                                const AnalyzerOptions &opt, const std::vector<int> &frames,
+                                int frameSpan) {
+  cv::VideoCapture capture(videoPath);
+  if (!capture.isOpened()) throw std::runtime_error("cannot open video: " + videoPath);
+
+  CropExtraction result;
+  result.input = videoPath;
+  result.fps = capture.get(cv::CAP_PROP_FPS);
+  if (!(result.fps > 0.1) || result.fps > 240.0) result.fps = 30.0;
+  result.frames = static_cast<int>(capture.get(cv::CAP_PROP_FRAME_COUNT));
+  result.width = static_cast<int>(capture.get(cv::CAP_PROP_FRAME_WIDTH));
+  result.height = static_cast<int>(capture.get(cv::CAP_PROP_FRAME_HEIGHT));
+
+  std::vector<int> targets;
+  if (!frames.empty()) {
+    for (const int frame : frames) {
+      for (int delta = -frameSpan; delta <= frameSpan; delta += 2) {
+        if (frame + delta >= 0) targets.push_back(frame + delta);
+      }
+    }
+  }
+  std::sort(targets.begin(), targets.end());
+  targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+
+  CardDetector detector(opt.detector);
+  Tracker tracker;
+
+  struct Best {
+    cv::Mat image;
+    std::string hash;
+    std::string artHash;
+    Quad quad{};
+    double quality = 0.0;
+    double contentBottom = 1.0;
+    double rank = -1.0;
+    int frame = 0;
+    double ts = 0.0;
+  };
+  // One group is one presentation of one card: consecutive frames of the held-up card land in
+  // the same group (their artwork hashes are close), and the same card shown again after a
+  // gap or another card starts a new group, so duplicates stay separate groups.
+  constexpr size_t kCropsPerCard = 12;  // recognition votes over a few frames of the same card
+  struct Group {
+    std::vector<Best> bests;  // the kCropsPerCard most legible frames, best first
+    std::string hash;
+    int firstFrame = 0;
+    double firstTs = 0.0;
+    int lastFrame = 0;
+    double lastTs = 0.0;
+    int hits = 0;
+  };
+  std::vector<Group> groups;
+
+  const auto take = [&](const cv::Mat &frameImage, int index) {
+    ++result.processedFrames;
+    const double ts = index / result.fps;
+    const auto detections = detector.detect(frameImage);
+    const auto candidates = verifyCandidates(frameImage, detections, opt, index);
+    const VerifiedCandidate *picked = presentedCandidate(candidates, opt);
+    if (opt.verbose) {
+      std::fprintf(stderr, "[frame %d] raw=%zu verified=%zu picked=%d\n", index,
+                   detections.size(), candidates.size(), picked ? 1 : 0);
+    }
+    if (std::getenv("CARDSCAN_DEBUG_COUNT")) {
+      std::fprintf(stderr, "pick f=%d hash=%s area=%.0f serial=%.2f q=%.2f\n", index,
+                   picked ? picked->hash.c_str() : "-",
+                   picked ? picked->detection.area : 0.0, picked ? picked->serial.score : 0.0,
+                   picked ? picked->quality : 0.0);
+    }
+    if (!picked) return;
+    // The collector line is what recognition needs, so a frame where its serial-line signature
+    // was found beats a merely sharp frame of the same card.
+    const double rank = 2.0 * picked->serial.score + picked->quality;
+    // The anchor follows the card (the pictures of a moving card drift slowly), while a gap
+    // longer than a show segment or a different artwork starts a new presentation.
+    const int window = std::max(2, static_cast<int>(std::lround(opt.segmentGapSeconds * result.fps)));
+    Group *group = nullptr;
+    for (auto &candidate : groups) {
+      if (index - candidate.lastFrame > window) continue;
+      const bool sameArt = hashDistance(candidate.hash, picked->hash) <= opt.hashMergeDistance;
+      const bool samePlace = !candidate.bests.empty() &&
+                             quadIoU(candidate.bests.front().quad, picked->detection.quad) >= 0.30;
+      if (!sameArt && !samePlace) continue;
+      group = &candidate;
+      break;
+    }
+    if (!group) {
+      groups.emplace_back();
+      group = &groups.back();
+      group->firstFrame = index;
+      group->firstTs = ts;
+    }
+    group->hash = picked->hash;
+    group->lastFrame = index;
+    group->lastTs = ts;
+    ++group->hits;
+    // Keep the few most legible frames of this presentation: recognition votes over them, and
+    // the strip below the quad that holds the collector line is already inside the crop.
+    Best candidate;
+    candidate.rank = rank;
+    candidate.image = picked->crop.clone();
+    candidate.contentBottom = picked->contentBottom;
+    candidate.hash = picked->hash;
+    candidate.artHash = picked->artHash;
+    candidate.quad = picked->detection.quad;
+    candidate.quality = picked->quality;
+    candidate.frame = index;
+    candidate.ts = ts;
+    group->bests.push_back(std::move(candidate));
+    std::sort(group->bests.begin(), group->bests.end(),
+              [](const Best &a, const Best &b) { return a.rank > b.rank; });
+    if (group->bests.size() > kCropsPerCard) group->bests.resize(kCropsPerCard);
+  };
+
+  if (targets.empty()) {
+    cv::Mat frameImage;
+    int index = 0;
+    while (capture.read(frameImage)) {
+      if (opt.maxFrames > 0 && index >= opt.maxFrames) break;
+      if (opt.stride <= 1 || index % opt.stride == 0) take(frameImage, index);
+      ++index;
+    }
+  } else {
+    cv::Mat frameImage;
+    for (const int index : targets) {
+      if (index < 0) continue;
+      capture.set(cv::CAP_PROP_POS_FRAMES, index);
+      if (!capture.read(frameImage)) continue;
+      take(frameImage, index);
+    }
+  }
+  capture.release();
+
+  std::filesystem::create_directories(outDir);
+  std::ofstream manifest(outDir + "/manifest.tsv");
+  if (!manifest) throw std::runtime_error("cannot write the manifest into " + outDir);
+  manifest << "id\tfile\tbest_frame\tfirst_frame\tlast_frame\thits\tquality\tcontent_bottom"
+              "\tphash\tart_hash\tquad\n";
+  int id = 0;
+  for (size_t i = 0; i < groups.size(); ++i) {
+    const Group &group = groups[i];
+    if (group.bests.empty()) continue;
+    // A single frame where the detection jumped to a competing candidate inside another
+    // presentation is noise, not a card of its own.
+    if (group.hits == 1) {
+      bool covered = false;
+      for (size_t j = 0; j < groups.size() && !covered; ++j) {
+        if (j == i || groups[j].hits < 3) continue;
+        covered = groups[j].firstFrame <= group.firstFrame && group.firstFrame <= groups[j].lastFrame;
+      }
+      if (covered) continue;
+    }
+    ++id;
+    for (size_t attempt = 0; attempt < group.bests.size(); ++attempt) {
+      const Best &chosen = group.bests[attempt];
+      char name[64];
+      std::snprintf(name, sizeof(name), "card_%02d%c_f%06d.jpg", id,
+                    static_cast<char>('a' + static_cast<int>(attempt)), chosen.frame);
+      if (!cv::imwrite(outDir + "/" + name, chosen.image)) {
+        throw std::runtime_error("cannot write card crop: " + outDir + "/" + name);
+      }
+      CardCrop crop;
+      crop.id = id;
+      crop.firstFrame = group.firstFrame;
+      crop.bestFrame = chosen.frame;
+      crop.lastFrame = group.lastFrame;
+      crop.firstTs = group.firstTs;
+      crop.bestTs = chosen.ts;
+      crop.lastTs = group.lastTs;
+      crop.hits = group.hits;
+      crop.quality = chosen.quality;
+      crop.hash = chosen.hash;
+      crop.artHash = chosen.artHash;
+      crop.quad.assign(chosen.quad.begin(), chosen.quad.end());
+      crop.contentBottom = chosen.contentBottom;
+      crop.image = chosen.image;
+      manifest << crop.id << '\t' << name << '\t' << crop.bestFrame << '\t' << crop.firstFrame
+               << '\t' << crop.lastFrame << '\t' << crop.hits << '\t' << crop.quality << '\t'
+               << crop.contentBottom << '\t' << crop.bestTs << '\t' << crop.hash << '\t'
+               << crop.artHash << '\t';
+      for (size_t i = 0; i < crop.quad.size(); ++i) {
+        manifest << (i ? "," : "") << static_cast<int>(std::lround(crop.quad[i].x)) << ','
+                 << static_cast<int>(std::lround(crop.quad[i].y));
+      }
+      manifest << '\n';
+      result.crops.push_back(std::move(crop));
+    }
+  }
+  return result;
+}
+
+// Recognition on the rectangles written by extractCardCrops: the OCR runs on those few images
+// and buildCardsFromReads makes the decision, so the checks measure the same rules as the
+// video path without decoding the feed again.
+std::vector<CropRecognition> Analyzer::recognizeCards(const std::string &dir) {
+  struct Row {
+    int id = 0;
+    std::string file;
+    int frame = 0;
+    int firstFrame = 0;
+    int lastFrame = 0;
+    double ts = 0.0;
+    double quality = 0.0;
+    double contentBottom = 1.0;
+    std::string hash;
+    std::string artHash;
+  };
+  std::vector<Row> rows;
+  {
+    std::ifstream manifest(dir + "/manifest.tsv");
+    std::string line;
+    std::getline(manifest, line);
+    while (std::getline(manifest, line)) {
+      std::vector<std::string> fields;
+      size_t start = 0;
+      while (start <= line.size()) {
+        const size_t tab = line.find('\t', start);
+        fields.push_back(line.substr(start, tab - start));
+        if (tab == std::string::npos) break;
+        start = tab + 1;
+      }
+      if (fields.size() < 11) continue;
+      Row row;
+      row.id = std::stoi(fields[0]);
+      row.file = dir + "/" + fields[1];
+      row.frame = std::stoi(fields[2]);
+      row.firstFrame = std::stoi(fields[3]);
+      row.lastFrame = std::stoi(fields[4]);
+      row.quality = std::stod(fields[6]);
+      row.contentBottom = std::stod(fields[7]);
+      row.ts = std::stod(fields[8]);
+      row.hash = fields[9];
+      row.artHash = fields[10];
+      rows.push_back(std::move(row));
+    }
+  }
+  if (rows.empty()) {
+    throw std::runtime_error("no card rectangles in " + dir + " (run --extract-cards first)");
+  }
+
+  std::unique_ptr<CardOcr> ocr;
+  if (opt_.enableOcr) {
+    ocr = std::make_unique<CardOcr>(opt_.ocr);
+    if (!ocr->available()) throw std::runtime_error("cannot start the OCR engine");
+  }
+
+  struct Presentation {
+    std::vector<ReadSample> samples;
+    std::string file;
+    OcrRead bestRead;
+    std::string indexIdentity;
+    int firstFrame = 0;
+    int lastFrame = 0;
+  };
+  std::map<int, Presentation> presentations;
+  for (const Row &row : rows) {
+    const cv::Mat image = cv::imread(row.file, cv::IMREAD_COLOR);
+    if (image.empty()) throw std::runtime_error("cannot read card crop: " + row.file);
+    if (!opt_.debugDir.empty()) {
+      ocr->setDebugDir(opt_.debugDir, std::filesystem::path(row.file).stem().string());
+    }
+    Presentation &presentation = presentations[row.id];
+    presentation.firstFrame = row.firstFrame;
+    presentation.lastFrame = row.lastFrame;
+    if (presentation.file.empty()) presentation.file = row.file;
+    const OcrRead read = ocr->readCard(image, row.contentBottom);
+    ReadSample sample;
+    sample.frame = row.frame;
+    sample.ts = row.ts;
+    sample.quality = row.quality;
+    sample.identity = read.identityKey();
+    sample.code = read.setCode;
+    sample.number = read.number;
+    sample.total = read.total;
+    sample.language = read.language;
+    sample.rarity = read.rarity;
+    sample.name = read.name;
+    sample.hash = row.hash;
+    sample.artHash = row.artHash;
+    sample.indexIdentity =
+        verifiedIndexIdentity(index_, image, row.hash, row.artHash, read.setCode, opt_);
+    if (sample.identity.empty() && opt_.enableTitleFallback) {
+      sample.name = ocr->readTitle(image);
+    }
+    if (read.score > presentation.bestRead.score) {
+      presentation.bestRead = read;
+      presentation.file = row.file;
+      presentation.indexIdentity = sample.indexIdentity;
+    }
+    presentation.samples.push_back(std::move(sample));
+  }
+
+  // Every presentation is one segment, so the vote is over its own few frames only.
+  AnalyzerOptions readOptions = opt_;
+  readOptions.minSegmentReads = 1;
+  std::vector<CropRecognition> out;
+  for (auto &entry : presentations) {
+    Presentation &presentation = entry.second;
+    const std::vector<CardResult> cards = buildCardsFromReads(
+        presentation.samples, readOptions, index_.empty() ? nullptr : &index_);
+    CropRecognition rec;
+    rec.file = presentation.file;
+    rec.id = entry.first;
+    rec.firstFrame = presentation.firstFrame;
+    rec.lastFrame = presentation.lastFrame;
+    rec.raw = presentation.bestRead.raw;
+    rec.name = presentation.bestRead.name;
+    for (const auto &sample : presentation.samples) {
+      if (!sample.name.empty()) rec.name = sample.name;
+    }
+    rec.score = presentation.bestRead.score;
+    rec.indexIdentity = presentation.indexIdentity;
+    if (!cards.empty()) {
+      const CardResult &card = cards.front();
+      rec.identity = card.identity;
+      rec.setCode = card.setCode;
+      rec.number = card.number;
+      rec.sources = card.identifiedBy;
+      rec.confidence = card.confidence;
+    }
+    out.push_back(std::move(rec));
+  }
+  return out;
 }
 
 std::vector<ReadSample> loadReadTimeline(const std::string &path) {

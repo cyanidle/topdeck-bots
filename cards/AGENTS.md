@@ -12,9 +12,15 @@ cmake -S cards -B cards/build -DCMAKE_BUILD_TYPE=Release
 cmake --build cards/build -j
 ctest --test-dir cards/build --output-on-failure        # юнит-тесты C++
 python3 cards/python/test_cardscan.py                   # ctypes-смоук
-CARDSCAN_SAMPLE_IMAGE=~/Documents/cards.jpg cards/tests/run_golden.sh
+cards/tests/run_golden.sh                               # фото + кадры + дубли (быстро)
+CARDSCAN_FULL=1 cards/tests/run_golden.sh               # + полный прогон видео (минуты)
+cards/tests/run_frame_check.sh                          # только гейт по выбранным кадрам
 python3 cards/tools/scryfall_index.py --stats           # состояние индекса картинок
 ```
+
+Гейты не гоняют детектор по всему видео: `--extract-cards ... --frames ...` прогоняет
+детектор по нескольким кадрам, `--cards <dir>` распознаёт сохранённые прямоугольники
+(см. `docs/spec-detector.md`, §6a). Полный прогон нужен только перед крупными изменениями.
 
 Индекс картинок (`cards/data/scryfall/`, в git не попадает) ведёт
 `cards/tools/scryfall_index.py` — см. `docs/spec-scryfall-index.md`. Без индекса

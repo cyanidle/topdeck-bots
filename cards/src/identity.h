@@ -15,7 +15,6 @@ struct OcrRead {
   std::string raw;       // exact text the read came from
   int regionId = -1;     // 0 = collector block, 1 = collector line, 2 = set line, 3 = title
   int score = 0;         // 0..12, see scoreRead()
-
   bool hasCollector() const { return !number.empty() && !total.empty(); }
   bool hasSetCode() const { return !setCode.empty(); }
   bool hasIdentity() const { return !number.empty() && !setCode.empty(); }
@@ -27,6 +26,7 @@ struct OcrRead {
 std::string asciiUpper(const std::string &s);
 std::string normalizeOcrText(const std::string &s);
 std::string fixDigitConfusions(const std::string &s);
+std::string normalizeCollector(const std::string &collector);
 OcrRead parseCollectorText(const std::string &text);
 OcrRead mergeReads(const std::vector<OcrRead> &reads);
 double codeDistance(const std::string &a, const std::string &b);

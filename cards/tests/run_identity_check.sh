@@ -39,12 +39,14 @@ expected = {
     "DDS:51",   # frame 12  "051/065 C / DDS - EN"
     "FIN:180",  # frame 120 "U 0180 FFXVI / FIN - EN"
     "WAR:149",  # frame 168 "149/264 C / WAR - RU"
+    "AKH:187",  # frame 198 "187/... AKH" (verified by eye; its show is split from WAR:149)
     "HOB:82",   # frame 252 "R 0082 / HOB - EN"
+    "TMT:67",   # frame 600 "R 0067 / TMT - EN" (Ninja Teen)
     "MSH:97",   # frame 886 "R 0097 / MSH - EN"
 }
-# AKH:187 (frame 198) is verified by eye too, but that card's number is read once and the
-# card shares one show segment with WAR:149 (5.5-8 s), so it stays unknown; see
-# cards/docs/spec-detector.md ("Ограничения").
+# MSH:251 ("The Ten Rings", frames 790-864) and C18:158 ("Rampaging Baloths", frames
+# 714-788) are filmed through a reflective sleeve / occluded and only the neighbour's line
+# is legible, so both shows must come out unknown (see cards/docs/spec-detector.md).
 
 report = json.load(open(sys.argv[1]))
 cards = report["cards"]
@@ -72,7 +74,7 @@ if missing:
 
 # Identities verified by eye that this engine is not expected to produce yet (see
 # cards/docs/spec-detector.md). Anything else is a wrong card, not a missing one.
-unexpected = set(identities) - expected - {"TMT:67", "C18:158"}
+unexpected = set(identities) - expected
 if unexpected:
     raise SystemExit("unexpected identities: %s" % sorted(unexpected))
 

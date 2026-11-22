@@ -18,6 +18,10 @@ struct OcrParams {
   double collectorRoiTop = 0.72;
   double collectorRoiWidth = 0.62;
   double collectorMaxStartX = 0.45;
+  // How far below the detected quad the collector line may sit, in card heights: the detector
+  // stops at the inner edge of the black border, so the card's own line lands a little below
+  // that edge, while the card lying behind shows its line much further down.
+  double contentMargin = 0.05;
   std::vector<std::string> knownSetCodes;
 };
 
@@ -39,7 +43,8 @@ struct CollectorLayout {
 };
 
 CardRegions defaultRegions(const OcrParams &p);
-CollectorLayout locateCollector(const cv::Mat &cardWarped, const OcrParams &p = OcrParams());
+CollectorLayout locateCollector(const cv::Mat &cardWarped, const OcrParams &p = OcrParams(),
+                                double contentBottom = 1.0);
 
 class CardOcr {
  public:
@@ -53,7 +58,7 @@ class CardOcr {
   const std::string &lastError() const { return error_; }
   const OcrParams &params() const { return p_; }
 
-  OcrRead readCard(const cv::Mat &cardWarped);
+  OcrRead readCard(const cv::Mat &cardWarped, double contentBottom = 1.0);
   std::string readTitle(const cv::Mat &cardWarped);
 
   // Benchmark hook: reads one isolated collector-line crop with an explicit variant.

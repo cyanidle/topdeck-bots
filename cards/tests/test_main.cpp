@@ -171,6 +171,10 @@ cardscan::ReadSample makeReadSample(int frame, double ts, const std::string &cod
 void testVoteDigits() {
   check(cardscan::voteDigits({"051", "051", "O51"}) == "051", "voteDigits per-position majority");
   check(cardscan::voteDigits({"051", "051", "65"}) == "051", "voteDigits picks the majority length");
+  check(cardscan::voteDigits({"149", "149", "49", "49"}) == "149",
+        "voteDigits keeps the leading digit when the lengths tie");
+  check(cardscan::voteDigits({"49", "49", "49", "149"}) == "49",
+        "voteDigits still follows a clear majority of the shorter read");
   check(cardscan::voteDigits({}).empty(), "voteDigits of nothing is empty");
   check(cardscan::voteDigits({"1234567"}).empty(), "voteDigits rejects absurdly long input");
 }

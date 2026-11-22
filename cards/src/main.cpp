@@ -2,6 +2,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -42,6 +43,14 @@ const char *kUsage =
     "  --phash-index <index.tsv>              identify cards by artwork hash (Scryfall index)\n"
     "  --ocr-bench <meta.jsonl> [--samples n]  rank OCR variants on synthetic collector lines\n"
     "  --hash-manifest <in.tsv> <out.tsv>   hash every image listed in the manifest\n"
+    "  --extract-cards <video> <outdir>     run the detector and write one normalized card\n"
+    "                                       rectangle per presentation (+ manifest.tsv)\n"
+    "  --frames <a,b,c>      only these frames (with --extract-cards); default: whole feed\n"
+    "  --frame-span <n>      also take the n frames around each of --frames (every 2nd)\n"
+    "  --cards <dir>         recognize the rectangles written by --extract-cards (no video)\n"
+    "  --crop-bottom <f>     extra crop below the card quad for the collector line (default 0.09)\n"
+    "  --serial-grow <n>     how many extra steps to grow the crop while looking for that line\n"
+    "  --collector-margin <f>  how far below the card quad its collector line may lie (default 0.05)\n"
     "  --probe-card <img>    run the collector-line locator + OCR on one card crop and print the read\n"
     "  --compare <a> <b>     print perceptual-hash / colour-signature distance of two images\n"
     "  --verbose             per-track logging to stderr\n"
@@ -102,6 +111,11 @@ int run(int argc, char **argv) {
   std::string benchMeta;
   std::string hashManifestIn;
   std::string hashManifestOut;
+  std::string extractIn;
+  std::string extractOut;
+  std::string cardsDir;
+  std::vector<int> onlyFrames;
+  int frameSpan = 0;
   int benchSamples = 100;
   cardscan::AnalyzerOptions options;
 
@@ -152,6 +166,29 @@ int run(int argc, char **argv) {
       } else if (arg == "--hash-manifest") {
         hashManifestIn = next("--hash-manifest");
         hashManifestOut = next("--hash-manifest");
+      } else if (arg == "--extract-cards") {
+        extractIn = next("--extract-cards");
+        extractOut = next("--extract-cards");
+      } else if (arg == "--frames") {
+        std::string list = next("--frames");
+        size_t start = 0;
+        while (start <= list.size()) {
+          const size_t comma = list.find(',', start);
+          const std::string item = list.substr(start, comma - start);
+          if (!item.empty()) onlyFrames.push_back(std::stoi(item));
+          if (comma == std::string::npos) break;
+          start = comma + 1;
+        }
+      } else if (arg == "--cards") {
+        cardsDir = next("--cards");
+      } else if (arg == "--frame-span") {
+        frameSpan = std::stoi(next("--frame-span"));
+      } else if (arg == "--crop-bottom") {
+        options.cropBottomExpansion = std::stod(next("--crop-bottom"));
+      } else if (arg == "--serial-grow") {
+        options.serialGrowSteps = std::stoi(next("--serial-grow"));
+      } else if (arg == "--collector-margin") {
+        options.ocr.contentMargin = std::stod(next("--collector-margin"));
       } else if (arg == "--samples") {
         benchSamples = std::stoi(next("--samples"));
       } else if (arg == "--compare") {
@@ -277,11 +314,10 @@ int run(int argc, char **argv) {
     }
     return 0;
   }
-  if (input.empty() && readsPath.empty()) {
+  if (input.empty() && readsPath.empty() && extractIn.empty() && cardsDir.empty()) {
     std::cerr << kUsage;
     return 2;
   }
-
   options.overlayPath = overlayPath;
   if (!setCodesPath.empty()) {
     std::ifstream in(setCodesPath);
@@ -304,6 +340,69 @@ int run(int argc, char **argv) {
     }
   }
   cardscan::Analyzer analyzer(options);
+
+  if (!extractIn.empty()) {
+    const cardscan::CropExtraction extraction =
+        cardscan::extractCardCrops(extractIn, extractOut, options, onlyFrames, frameSpan);
+    for (const auto &crop : extraction.crops) {
+      std::printf("#%-2d f=%d..%d best=%d hits=%3d q=%.2f %s\n", crop.id, crop.firstFrame,
+                  crop.lastFrame, crop.bestFrame, crop.hits, crop.quality, crop.hash.c_str());
+    }
+    std::printf("crops: %zu from %d frame(s) -> %s\n", extraction.crops.size(),
+                extraction.processedFrames, extractOut.c_str());
+    return 0;
+  }
+
+  if (!cardsDir.empty()) {
+    const std::vector<cardscan::CropRecognition> recognized = analyzer.recognizeCards(cardsDir);
+    auto escape = [](const std::string &text) {
+      std::string out;
+      for (char c : text) {
+        if (c == '"' || c == '\\') out += '\\';
+        if (c == '\n') {
+          out += "\\n";
+          continue;
+        }
+        if (c == '\t') {
+          out += "\\t";
+          continue;
+        }
+        out += c;
+      }
+      return out;
+    };
+    std::string json = "[";
+    for (size_t i = 0; i < recognized.size(); ++i) {
+      const cardscan::CropRecognition &rec = recognized[i];
+      const std::string base = std::filesystem::path(rec.file).filename().string();
+      std::printf("#%-2d f=%d..%d %-24s %-10s by=%-12s conf=%.2f index=%-10s name='%s' read='%s'\n",
+                  rec.id, rec.firstFrame, rec.lastFrame, base.c_str(),
+                  rec.identity.empty() ? "unknown" : rec.identity.c_str(),
+                  rec.sources.empty() ? "-" : rec.sources.c_str(), rec.confidence,
+                  rec.indexIdentity.empty() ? "-" : rec.indexIdentity.c_str(), rec.name.c_str(),
+                  rec.raw.c_str());
+      if (i) json += ',';
+      json += "\n  {\"file\":\"" + escape(base) + "\",\"identity\":\"" + escape(rec.identity) +
+              "\",\"set\":\"" + escape(rec.setCode) + "\",\"collector\":\"" + escape(rec.number) +
+              "\",\"identified_by\":\"" + escape(rec.sources) + "\",\"index\":\"" +
+              escape(rec.indexIdentity) + "\",\"confidence\":" + std::to_string(rec.confidence) +
+              ",\"score\":" + std::to_string(rec.score) + ",\"raw\":\"" + escape(rec.raw) + "\"}";
+    }
+    json += "\n]\n";
+    if (!jsonPath.empty()) {
+      std::ofstream out(jsonPath);
+      if (!out) {
+        std::cerr << "cannot write json: " << jsonPath << "\n";
+        return 1;
+      }
+      out << json;
+    }
+    const size_t identified = static_cast<size_t>(std::count_if(
+        recognized.begin(), recognized.end(),
+        [](const cardscan::CropRecognition &rec) { return !rec.identity.empty(); }));
+    std::printf("cards: %zu identified: %zu\n", recognized.size(), identified);
+    return 0;
+  }
 
   std::string json;
   std::string summary;

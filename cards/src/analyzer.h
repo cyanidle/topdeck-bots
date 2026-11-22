@@ -26,6 +26,10 @@ struct AnalyzerOptions {
   double cropBottomExpansion = 0.09;
   double cropBottomExpansionMax = 0.30;
   double cropBottomExpansionStep = 0.06;
+  // Brightness rise under the card's black border, as a share of the way back to the card body:
+  // the content of the card ends there, which is what keeps the collector line of a card lying
+  // under this one out of the OCR search (see contentBottomFromBorder).
+  double contentRiseRatio = 0.5;
   int serialGrowSteps = 4;
   int stride = 1;
   int maxFrames = 0;
@@ -36,6 +40,10 @@ struct AnalyzerOptions {
   int minSegmentReads = 5;
   double segmentGapSeconds = 0.6;
   double segmentCodeDistance = 2.5;
+  // A cleanly read known set code this far from the segment's majority starts a new show
+  // when the majority has been silent for a full segmentGapSeconds (unreadable frames
+  // between two presentations instead of an incompatible-code run).
+  double segmentShowDistance = 1.5;
   double segmentNumberCodeTolerance = 1.1;
   int segmentIncompatibleRun = 3;
   int minNumberSupport = 2;
@@ -113,12 +121,65 @@ struct VideoResult {
   std::vector<ReadSample> reads;
 };
 
+// One held-up card as it was seen best in the feed: the detected quad plus the strip below it
+// that holds the collector line, warped to the card aspect ratio. Rectangles of one
+// presentation collapse into the sharpest one, so the list is "one rectangle per presentation".
+struct CardCrop {
+  int id = 0;
+  int firstFrame = 0;
+  int bestFrame = 0;
+  int lastFrame = 0;
+  double firstTs = 0.0;
+  double bestTs = 0.0;
+  double lastTs = 0.0;
+  int hits = 0;
+  double quality = 0.0;
+  double contentBottom = 1.0;
+  std::string hash;
+  std::string artHash;
+  std::vector<cv::Point2f> quad;
+  cv::Mat image;
+};
+
+struct CropExtraction {
+  std::string input;
+  int width = 0;
+  int height = 0;
+  double fps = 0.0;
+  int frames = 0;
+  int processedFrames = 0;
+  std::vector<CardCrop> crops;
+};
+
+struct CropRecognition {
+  std::string file;
+  int id = 0;
+  int firstFrame = 0;
+  int lastFrame = 0;
+  std::string setCode;
+  std::string number;
+  std::string identity;
+  std::string sources;
+  std::string indexIdentity;
+  std::string name;
+  std::string raw;
+  double confidence = 0.0;
+  int score = 0;
+};
+
+// The detector is the expensive half, so it runs once and writes the normalized card
+// rectangles; recognition and the checks then work on those few images instead of the video.
+CropExtraction extractCardCrops(const std::string &videoPath, const std::string &outDir,
+                                const AnalyzerOptions &opt, const std::vector<int> &frames = {},
+                                int frameSpan = 0);
+
 class Analyzer {
  public:
   explicit Analyzer(const AnalyzerOptions &options);
 
   ImageResult analyzeImage(const std::string &path);
   VideoResult analyzeVideo(const std::string &path);
+  std::vector<CropRecognition> recognizeCards(const std::string &dir);
 
   const AnalyzerOptions &options() const { return opt_; }
 
@@ -129,7 +190,6 @@ class Analyzer {
 
 bool hasImageExtension(const std::string &path);
 std::string voteDigits(const std::vector<std::string> &values);
-std::string normalizeCollector(const std::string &collector);
 std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads,
                                             const AnalyzerOptions &opt,
                                             const HashIndex *index = nullptr);
