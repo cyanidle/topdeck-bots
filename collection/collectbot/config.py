@@ -21,6 +21,7 @@ class Settings:
     set_codes_path: str = str(DEFAULT_SET_CODES)
     user_agent: str = "collectbot/0.1 (+contact)"
     media_max_mb: int = 20
+    scan_stride: int = 2
     log_level: str = "INFO"
     log_format: str = "text"
     log_file: str = ""
@@ -43,6 +44,8 @@ class Settings:
             settings.scryfall_enabled = raw["SCRYFALL_ENABLED"] not in ("0", "false", "no")
         if raw.get("MEDIA_MAX_MB"):
             settings.media_max_mb = int(raw["MEDIA_MAX_MB"])
+        if raw.get("SCAN_STRIDE"):
+            settings.scan_stride = int(raw["SCAN_STRIDE"])
         return settings
 
     def redacted(self) -> dict[str, object]:

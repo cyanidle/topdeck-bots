@@ -39,11 +39,12 @@ def report_cards(report: dict) -> list[ScanCard]:
     return cards
 
 
-def scan_media(path: str | Path, set_codes: list[str]) -> dict:
+def scan_media(path: str | Path, set_codes: list[str], stride: int = 1) -> dict:
     source = Path(path)
     started = time.monotonic()
-    log.info("scan started", extra={"file": source.name, "set_codes": len(set_codes)})
-    report = analyze(str(path), set_codes=set_codes)
+    log.info("scan started", extra={"file": source.name, "set_codes": len(set_codes),
+                                    "stride": stride})
+    report = analyze(str(path), set_codes=set_codes, stride=stride)
     result = ",".join(
         f"{str(item.get('identity') or 'unknown')}[{item.get('identified_by') or '-'}]"
         for item in (report.get("cards") or [])[:SCAN_RESULT_LIMIT])
