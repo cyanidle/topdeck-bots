@@ -168,8 +168,7 @@ def entry_row(entry: CollectionEntry) -> list[InlineKeyboardButton]:
 
 
 def scan_keyboard(entries: list[CollectionEntry]) -> InlineKeyboardMarkup | None:
-    # A stack scan ends with a long list where anonymous +/- rows cannot be tied to their
-    # card, so the buttons are only kept for a single-entry result where they are unambiguous.
+    # кнопки только под одиночный результат: в пачке ряд ➖/➕/🗑 не привязать к карте
     if len(entries) != 1:
         return None
     return InlineKeyboardMarkup(inline_keyboard=[entry_row(entries[0])])

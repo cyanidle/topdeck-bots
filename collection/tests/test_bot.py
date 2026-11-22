@@ -144,6 +144,10 @@ class ScanKeyboardTest(unittest.TestCase):
         self.assertEqual([button.text for button in board.inline_keyboard[0]],
                          ["➖", "➕", "🗑"])
 
+    def test_multiple_copies_of_one_card_still_get_buttons(self):
+        board = scan_keyboard([entry(1, "TMT", "67", 3)])
+        self.assertIsNotNone(board)
+
     def test_stack_scan_has_no_buttons(self):
         self.assertIsNone(scan_keyboard([]))
         self.assertIsNone(scan_keyboard([entry(1, "TMT", "67", 1), entry(2, "WAR", "149", 1)]))
