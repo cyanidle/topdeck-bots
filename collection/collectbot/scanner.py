@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 from cardscan import analyze
@@ -37,5 +38,27 @@ def report_cards(report: dict) -> list[ScanCard]:
     return cards
 
 
+SCAN_RESULT_LIMIT = 60
+
+
 def scan_media(path: str | Path, set_codes: list[str]) -> dict:
-    return analyze(str(path), set_codes=set_codes)
+    source = Path(path)
+    started = time.monotonic()
+    log.info("scan started", extra={"file": source.name, "set_codes": len(set_codes)})
+    report = analyze(str(path), set_codes=set_codes)
+    result = ",".join(
+        f"{str(item.get('identity') or 'unknown')}[{item.get('identified_by') or '-'}]"
+        for item in (report.get("cards") or [])[:SCAN_RESULT_LIMIT])
+    log.info("scan finished", extra={
+        "file": source.name,
+        "cards": report.get("count"),
+        "identified": report.get("identified"),
+        "frames": report.get("frames"),
+        "processed_frames": report.get("processed_frames"),
+        "ocr_reads": report.get("ocr_reads"),
+        "ocr_reads_with_identity": report.get("ocr_reads_with_identity"),
+        "engine_s": report.get("elapsed_seconds"),
+        "wall_s": round(time.monotonic() - started, 1),
+        "result": result,
+    })
+    return report

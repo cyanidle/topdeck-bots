@@ -3,12 +3,12 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timezone
 
-from aiogram.types import Chat, Document, Message, PhotoSize, VideoNote
+from aiogram.types import Animation, Chat, Document, Message, PhotoSize, Video, VideoNote
 
 from topbot.models import Card
 
-from collectbot.bot import classify_media, entry_line, fit_lines, media_info, parse_callback, \
-    render_collection
+from collectbot.bot import classify_media, entry_line, fit_lines, media_info, media_meta, \
+    parse_callback, render_collection
 from collectbot.models import CollectionEntry
 
 
@@ -42,6 +42,26 @@ class MediaInfoTest(unittest.TestCase):
         doc = Document(file_id="f4", file_unique_id="u4", file_name="doc.pdf",
                        mime_type="application/pdf")
         self.assertIsNone(media_info(message_with(document=doc)))
+
+    def test_animation(self):
+        anim = Animation(file_id="f5", file_unique_id="u5", width=320, height=240, duration=3,
+                         mime_type="video/mp4", file_size=777)
+        info = media_info(message_with(animation=anim))
+        self.assertEqual(info[:3], ("видео", ".mp4", 777))
+        self.assertIs(info[3], anim)
+
+
+class MediaMetaTest(unittest.TestCase):
+    def test_video_fields(self):
+        video = Video(file_id="f6", file_unique_id="u6", width=640, height=480, duration=9,
+                      file_size=1024)
+        self.assertEqual(media_meta(video), {"file_id": "f6", "file_unique_id": "u6",
+                                             "duration": 9, "width": 640, "height": 480})
+
+    def test_document_ids_only(self):
+        doc = Document(file_id="f7", file_unique_id="u7", file_name="clip.mp4",
+                       mime_type="video/mp4")
+        self.assertEqual(media_meta(doc), {"file_id": "f7", "file_unique_id": "u7"})
 
 
 def entry(entry_id: int, set_code: str, number: str, count: int) -> CollectionEntry:

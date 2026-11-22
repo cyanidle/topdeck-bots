@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 import time
@@ -37,6 +38,8 @@ NEGATIVE_TTL_S = 7 * 86400
 IDENTITY_SPLIT = re.compile(r"[:\s]+")
 CODE_RE = re.compile(r"[A-Z0-9]{2,6}")
 NUMBER_RE = re.compile(r"\d{1,4}[a-zA-Z★]?")
+
+log = logging.getLogger(__name__)
 
 
 def normalize_number(number: str) -> str:
@@ -107,15 +110,22 @@ class CollectDatabase(TopbotDatabase):
                 "VALUES(?,?,?,?,?,?)",
                 (user_id, set_code, number, delta, now, now),
             )
+            log.info("collection insert", extra={"user": user_id, "set": set_code,
+                                                 "number": number, "count": delta})
             return self.get_card(user_id, set_code, number)
         updated = entry.count + delta
         if updated <= 0:
             self.conn.execute("DELETE FROM collection_cards WHERE id=?", (entry.id,))
+            log.info("collection delete", extra={"user": user_id, "set": set_code,
+                                                 "number": number, "count": entry.count,
+                                                 "reason": "count reached zero"})
             return None
         self.conn.execute(
             "UPDATE collection_cards SET count=?, updated_at=? WHERE id=?",
             (updated, now, entry.id),
         )
+        log.info("collection update", extra={"user": user_id, "set": set_code, "number": number,
+                                             "count": updated, "delta": delta})
         return self.entry_by_id(user_id, entry.id)
 
     def remove_card(self, user_id: int, set_code: str, number: str) -> bool:
@@ -123,14 +133,19 @@ class CollectDatabase(TopbotDatabase):
             "DELETE FROM collection_cards WHERE user_id=? AND set_code=? AND number=?",
             (user_id, set_code, number),
         )
-        return cursor.rowcount > 0
+        removed = cursor.rowcount > 0
+        log.info("collection delete", extra={"user": user_id, "set": set_code,
+                                             "number": number, "found": removed})
+        return removed
 
     def remove_by_id(self, user_id: int, entry_id: int) -> bool:
         cursor = self.conn.execute(
             "DELETE FROM collection_cards WHERE user_id=? AND id=?",
             (user_id, entry_id),
         )
-        return cursor.rowcount > 0
+        removed = cursor.rowcount > 0
+        log.info("collection delete", extra={"user": user_id, "entry": entry_id, "found": removed})
+        return removed
 
     def list_cards(self, user_id: int) -> list[CollectionEntry]:
         rows = self.conn.execute(
@@ -165,6 +180,8 @@ class CollectDatabase(TopbotDatabase):
                 int(time.time()),
             ),
         )
+        log.debug("prints cache write", extra={"set": set_code, "number": number,
+                                               "hit": card is not None})
 
     def cached_print(self, set_code: str, number: str) -> Card | None:
         row = self.conn.execute(

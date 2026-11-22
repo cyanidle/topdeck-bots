@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import tempfile
+import time
 from collections import defaultdict
 from html import escape
 from pathlib import Path
@@ -11,8 +13,9 @@ from aiogram import Bot, F, Router
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import (BotCommand, CallbackQuery, Document, InlineKeyboardButton,
-                           InlineKeyboardMarkup, Message, PhotoSize, Video, VideoNote)
+from aiogram.types import (Animation, BotCommand, CallbackQuery, Document, ErrorEvent,
+                           InlineKeyboardButton, InlineKeyboardMarkup, Message, PhotoSize,
+                           Video, VideoNote)
 
 from topbot.messages import plural
 from topbot.models import Card
@@ -83,6 +86,7 @@ async def setup_bot_commands(bot: Bot, attempts: int = 3) -> None:
     for attempt in range(1, attempts + 1):
         try:
             await bot.set_my_commands(COMMANDS)
+            log.info("bot commands registered")
             return
         except TelegramNetworkError:
             if attempt == attempts:
@@ -170,14 +174,25 @@ def _ensure_user(message: Message) -> int | None:
     return user.id
 
 
+def media_meta(obj) -> dict[str, object]:
+    meta: dict[str, object] = {}
+    for field in ("file_unique_id", "file_id", "duration", "width", "height", "length"):
+        value = getattr(obj, field, None)
+        if value:
+            meta[field] = value
+    return meta
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
-    _ensure_user(message)
+    user_id = _ensure_user(message)
+    log.info("command /start", extra={"user": user_id})
     await message.answer(HELP_TEXT)
 
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
+    log.info("command /help", extra={"user": _ensure_user(message)})
     await message.answer(HELP_TEXT)
 
 
@@ -186,6 +201,7 @@ async def cmd_add(message: Message, command: CommandObject) -> None:
     user_id = _ensure_user(message)
     if user_id is None:
         return
+    log.info("command /add", extra={"user": user_id, "args": command.args})
     tokens = [token for token in (command.args or "").split() if token]
     if not tokens:
         await message.answer(
@@ -205,6 +221,8 @@ async def cmd_add(message: Message, command: CommandObject) -> None:
     if identity is None:
         identity = await _identity_by_name(" ".join(tokens))
         if identity is None:
+            log.info("add failed: card not found", extra={"user": user_id,
+                                                          "query": " ".join(tokens)})
             await message.answer(
                 f"Не нашёл карту «{escape(' '.join(tokens))}» — попробуй формат SET:номер (TMT:67).",
                 parse_mode="HTML")
@@ -219,6 +237,7 @@ async def cmd_sub(message: Message, command: CommandObject) -> None:
     user_id = _ensure_user(message)
     if user_id is None:
         return
+    log.info("command /sub", extra={"user": user_id, "args": command.args})
     tokens = [token for token in (command.args or "").split() if token]
     count = 1
     if len(tokens) >= 2 and tokens[-1].isdigit():
@@ -234,6 +253,8 @@ async def cmd_sub(message: Message, command: CommandObject) -> None:
         await message.answer("Формат: /sub TMT:67 — убрать одну копию (или /sub TMT:67 2).")
         return
     if ctx.db.get_card(user_id, identity[0], identity[1]) is None:
+        log.info("sub failed: not in collection", extra={
+            "user": user_id, "identity": f"{identity[0]}:{identity[1]}"})
         await message.answer(f"{identity[0]}:{identity[1]} в коллекции нет.")
         return
     entry = ctx.db.change_count(user_id, identity[0], identity[1], -count)
@@ -249,6 +270,7 @@ async def cmd_del(message: Message, command: CommandObject) -> None:
     user_id = _ensure_user(message)
     if user_id is None:
         return
+    log.info("command /del", extra={"user": user_id, "args": command.args})
     tokens = [token for token in (command.args or "").split() if token]
     identity = normalize_identity(tokens[0]) if tokens else None
     if identity is None and tokens and len(tokens) == 2:
@@ -268,6 +290,8 @@ async def cmd_list(message: Message) -> None:
     if user_id is None:
         return
     entries = ctx.db.list_cards(user_id)
+    log.info("command /list", extra={"user": user_id, "entries": len(entries),
+                                     "total": sum(entry.count for entry in entries)})
     text = escape(render_collection(entries, lambda entry: ctx.db.cached_print(entry.set_code, entry.number)))
     if len(entries) == 0:
         await message.answer(f"{text}\n\nПришли фото карт — и я начну её наполнять.", parse_mode="HTML")
@@ -277,14 +301,14 @@ async def cmd_list(message: Message) -> None:
     await message.answer(text, parse_mode="HTML")
 
 
-def media_info(message: Message) -> tuple[str, str, int, PhotoSize | VideoNote | Video | Document] | None:
+def media_info(message: Message) -> tuple[str, str, int, PhotoSize | VideoNote | Video | Animation | Document] | None:
     if message.photo:
         photo = message.photo[-1]
         return "фото", ".jpg", photo.file_size or 0, photo
     if message.video_note is not None:
         note = message.video_note
         return "видео-кружок", ".mp4", note.file_size or 0, note
-    obj = message.video or message.document
+    obj = message.video or message.animation or message.document
     if obj is None:
         return None
     desc = classify_media(obj.file_name, obj.mime_type, message.video is not None)
@@ -300,11 +324,24 @@ async def on_media(message: Message, bot: Bot) -> None:
         return
     info = media_info(message)
     if info is None:
+        rejected = message.document or message.animation
+        log.info("media rejected: unsupported type", extra={
+            "user": user_id, "message_id": message.message_id,
+            "content": message.content_type,
+            "file_name": getattr(rejected, "file_name", None),
+            "mime": getattr(rejected, "mime_type", None),
+        })
         await message.answer("Принимаю фото, видео, кружки и файлы — PDF не читаю.")
         return
     label, suffix, size, downloadable = info
+    log.info("media received", extra={
+        "user": user_id, "message_id": message.message_id, "label": label,
+        "size": size, **media_meta(downloadable),
+    })
     limit = ctx.settings.media_max_mb * 1024 * 1024
     if size and size > limit:
+        log.info("media rejected: too large", extra={"user": user_id, "size": size,
+                                                     "limit": limit})
         await message.answer(
             f"{label.capitalize()} весит {size // (1024 * 1024)} МБ — Telegram не отдаст боту "
             f"больше {ctx.settings.media_max_mb} МБ. Пришли файл поменьше или короткий кусок.")
@@ -312,11 +349,15 @@ async def on_media(message: Message, bot: Bot) -> None:
     placeholder = await message.answer(
         "🔍 Сканирую видео — длинный ролик занимает пару минут…"
         if suffix in VIDEO_SUFFIXES else "🔍 Сканирую…")
+    started = time.monotonic()
     try:
         with tempfile.TemporaryDirectory(prefix="collectbot-") as tmp:
             path = Path(tmp) / f"media{suffix}"
             await bot.download(downloadable, destination=str(path))
-            report = await _run_scan(path)
+            log.info("media downloaded", extra={
+                "user": user_id, "bytes": path.stat().st_size,
+                "elapsed_s": round(time.monotonic() - started, 1)})
+            report = await _run_scan(path, user_id)
     except Exception:
         log.exception("media scan failed", extra={"user": user_id, "label": label})
         await placeholder.edit_text("Не получилось прочитать файл — попробуй ещё раз или сними крупнее.")
@@ -324,17 +365,36 @@ async def on_media(message: Message, bot: Bot) -> None:
     await _apply_scan(placeholder, user_id, report)
 
 
+@router.message()
+async def on_unhandled(message: Message) -> None:
+    user_id = _ensure_user(message)
+    log.info("unhandled message", extra={
+        "user": user_id, "message_id": message.message_id,
+        "content": message.content_type,
+        "text": (message.text or message.caption or "")[:80],
+    })
+    if message.text is not None or message.caption is not None:
+        return
+    await message.answer("Понимаю команды (/help) и медиа: пришли фото или видео карт.")
+
+
 @router.callback_query(F.data.startswith("cnt:"))
 async def cb_count(callback: CallbackQuery) -> None:
     parsed = parse_callback(callback.data or "")
     if parsed is None:
+        log.info("callback cnt: unparsable", extra={"user": callback.from_user.id,
+                                                    "data": callback.data})
         await callback.answer()
         return
     _, entry_id, delta = parsed
     entry = ctx.db.entry_by_id(callback.from_user.id, entry_id)
     if entry is None:
+        log.info("callback cnt: stale entry", extra={"user": callback.from_user.id,
+                                                     "entry": entry_id})
         await callback.answer("Запись уже удалена", show_alert=True)
         return
+    log.info("callback cnt", extra={"user": callback.from_user.id, "entry": entry_id,
+                                    "identity": f"{entry.set_code}:{entry.number}", "delta": delta})
     updated = ctx.db.change_count(callback.from_user.id, entry.set_code, entry.number, delta)
     if updated is None:
         await callback.answer(f"{entry.set_code}:{entry.number} — удалена (количество дошло до нуля).")
@@ -347,14 +407,28 @@ async def cb_count(callback: CallbackQuery) -> None:
 async def cb_delete(callback: CallbackQuery) -> None:
     parsed = parse_callback(callback.data or "")
     if parsed is None:
+        log.info("callback del: unparsable", extra={"user": callback.from_user.id,
+                                                    "data": callback.data})
         await callback.answer()
         return
+    log.info("callback del", extra={"user": callback.from_user.id, "entry": parsed[1]})
     removed = ctx.db.remove_by_id(callback.from_user.id, parsed[1])
     await callback.answer("🗑 Удалил." if removed else "Запись уже удалена.", show_alert=not removed)
 
 
-async def _run_scan(path: Path) -> dict:
+@router.errors()
+async def on_error(event: ErrorEvent) -> None:
+    log.error("update handling failed", exc_info=event.exception,
+              extra={"update_id": event.update.update_id if event.update else None})
+
+
+async def _run_scan(path: Path, user_id: int) -> dict:
+    queued = time.monotonic()
     async with ctx.scan_lock:
+        waited = time.monotonic() - queued
+        if waited > 1.0:
+            log.info("scan queued behind previous scan",
+                     extra={"user": user_id, "waited_s": round(waited, 1)})
         return await asyncio.to_thread(scan_media, str(path), ctx.set_codes)
 
 
@@ -365,6 +439,11 @@ async def _apply_scan(placeholder: Message, user_id: int, report: dict) -> None:
     deltas: dict[tuple[str, str], int] = defaultdict(int)
     for card in prints:
         deltas[(card.set_code, card.number)] += 1
+    log.info("scan report", extra={
+        "user": user_id, "cards": len(cards), "prints": len(prints), "unknown": unknown,
+        "deltas": " ".join(f"{code}:{number}+{added}"
+                           for (code, number), added in sorted(deltas.items())) or "-",
+    })
     names: dict[tuple[str, str], Card] = {}
     try:
         names = await ctx.resolver.resolve_missing(list(deltas))
@@ -393,8 +472,13 @@ async def _apply_scan(placeholder: Message, user_id: int, report: dict) -> None:
         parts.append("Карт не нашёл — пришли снимок, где видна карточка целиком.")
     text = "\n\n".join(parts)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[entry_row(entry) for entry in entries[:20]])
-    await placeholder.edit_text(text, parse_mode="HTML",
-                                reply_markup=keyboard if entries else None)
+    try:
+        await placeholder.edit_text(text, parse_mode="HTML",
+                                    reply_markup=keyboard if entries else None)
+    except Exception:
+        log.exception("scan result edit failed", extra={"user": user_id})
+        with contextlib.suppress(Exception):
+            await placeholder.answer(text, parse_mode="HTML")
 
 
 async def _resolve_quiet(set_code: str, number: str) -> Card | None:
@@ -417,4 +501,6 @@ async def _identity_by_name(query: str) -> tuple[str, str] | None:
         return None
     code, number = card.set_code.upper(), normalize_number(card.collector_no)
     ctx.db.cache_print(code, number, card)
+    log.info("identity resolved by name", extra={"query": query, "identity": f"{code}:{number}",
+                                                 "name": card.name_en})
     return code, number

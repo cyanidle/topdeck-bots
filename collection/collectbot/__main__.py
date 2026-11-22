@@ -26,11 +26,8 @@ async def main() -> None:
         raise SystemExit("BOT_TOKEN is empty: fill .env")
     set_codes = load_set_codes(settings.set_codes_path)
     log.info("starting collectbot", extra={
-        "db": settings.db_path,
+        **settings.redacted(),
         "set_codes": len(set_codes),
-        "telegram_proxy": settings.telegram_proxy or "direct",
-        "scryfall_proxy": settings.scryfall_proxy or "direct",
-        "scryfall": settings.scryfall_enabled,
     })
 
     db = CollectDatabase(settings.db_path)
