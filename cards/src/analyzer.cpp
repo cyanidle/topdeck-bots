@@ -548,24 +548,43 @@ bool acceptsIndexMatch(const std::vector<IndexMatch> &matches, const AnalyzerOpt
 
 // Only a keypoint match proves the two pictures show one card: the hash distances are too
 // close between the same card under studio light and an unrelated card, so the hash only
-// picks a shortlist and the best verified candidate wins.
-std::string verifiedIndexIdentity(const HashIndex &index, const cv::Mat &crop,
-                                  const std::string &fullHash, const std::string &artHash,
-                                  const AnalyzerOptions &opt) {
-  if (index.empty() || fullHash.empty()) return {};
-  const std::vector<IndexMatch> matches =
-      index.lookup(fullHash, artHash, opt.indexVerifyCandidates);
-  if (!acceptsIndexMatch(matches, opt)) return {};
+// picks a shortlist and the best verified candidate wins. When the collector line already
+// named the set, the print is looked up inside that set first (a reprint shares the artwork).
+std::string bestVerified(const HashIndex &index, const cv::Mat &crop,
+                         const std::vector<IndexMatch> &matches, const AnalyzerOptions &opt) {
   int bestInliers = 0;
+  int secondInliers = 0;
   std::string best;
   for (const auto &match : matches) {
+    if (match.artDistance > opt.indexShortlistDistance) continue;
     const ArtVerification verify = index.verifyArt(crop, match);
-    if (verify.inliers <= bestInliers) continue;
-    bestInliers = verify.inliers;
-    best = match.setCode + ":" + normalizeCollector(match.collector);
+    if (verify.inliers > bestInliers) {
+      secondInliers = bestInliers;
+      bestInliers = verify.inliers;
+      best = match.setCode + ":" + normalizeCollector(match.collector);
+    } else if (verify.inliers > secondInliers) {
+      secondInliers = verify.inliers;
+    }
   }
   if (bestInliers < opt.indexMinInliers) return {};
+  // A blurred frame can produce a dozen coincidental feature matches, so the winner must also
+  // stand out from the runner-up.
+  if (bestInliers < 2 * secondInliers) return {};
   return best;
+}
+
+std::string verifiedIndexIdentity(const HashIndex &index, const cv::Mat &crop,
+                                  const std::string &fullHash, const std::string &artHash,
+                                  const std::string &preferredSet, const AnalyzerOptions &opt) {
+  if (index.empty() || fullHash.empty()) return {};
+  if (!preferredSet.empty()) {
+    const std::string local = bestVerified(
+        index, crop, index.lookupInSet(fullHash, artHash, preferredSet, opt.indexVerifyCandidates),
+        opt);
+    if (!local.empty()) return local;
+  }
+  return bestVerified(index, crop,
+                      index.lookup(fullHash, artHash, opt.indexVerifyCandidates), opt);
 }
 
 // One identity channel (collector line, artwork hash, title) and its strength.
@@ -887,17 +906,26 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
       if (bestVotes > 0 && (bestVotes >= opt.indexMinSupport ||
                             (bestVotes == 1 && votes.size() == 1))) {
         const size_t colon = bestKey.find(':');
-        hashEvidence.valid = true;
-        hashEvidence.setCode = bestKey.substr(0, colon);
-        hashEvidence.number = bestKey.substr(colon + 1);
-        const double agreement =
-            static_cast<double>(bestVotes) / std::max<size_t>(1, segment.items.size());
-        hashEvidence.strength = std::min(1.0, 0.45 + 0.55 * agreement);
-        const ReadSample *src = source[bestKey];
-        if (src) {
-          card.bestFrame = src->frame;
-          card.bestTs = src->ts;
-          if (!src->quad.empty()) card.quad = src->quad;
+        const std::string indexedSet = bestKey.substr(0, colon);
+        // The picture must not contradict the printed set code: when the collector line was
+        // read well enough to name the set, a different set from the index is a bad match on
+        // a blurry neighbour card, and "unknown" is better than a confident wrong card.
+        const bool contradicts =
+            !card.setCode.empty() &&
+            codeDistance(card.setCode, indexedSet) > opt.segmentNumberCodeTolerance;
+        if (!contradicts) {
+          hashEvidence.valid = true;
+          hashEvidence.setCode = indexedSet;
+          hashEvidence.number = bestKey.substr(colon + 1);
+          const double agreement =
+              static_cast<double>(bestVotes) / std::max<size_t>(1, segment.items.size());
+          hashEvidence.strength = std::min(1.0, 0.45 + 0.55 * agreement);
+          const ReadSample *src = source[bestKey];
+          if (src) {
+            card.bestFrame = src->frame;
+            card.bestTs = src->ts;
+            if (!src->quad.empty()) card.quad = src->quad;
+          }
         }
       }
 
@@ -1086,7 +1114,8 @@ ImageResult Analyzer::analyzeImage(const std::string &path) {
 
     Evidence hashEvidence;
     if (!index_.empty()) {
-      const std::string verified = verifiedIndexIdentity(index_, crop, v.hash, v.artHash, opt_);
+      const std::string verified =
+          verifiedIndexIdentity(index_, crop, v.hash, v.artHash, s.read.setCode, opt_);
       if (!verified.empty()) {
         hashEvidence.valid = true;
         hashEvidence.setCode = verified.substr(0, verified.find(':'));
@@ -1294,7 +1323,7 @@ VideoResult Analyzer::analyzeVideo(const std::string &path) {
           }
           sample.quad.assign(top.detection.quad.begin(), top.detection.quad.end());
           sample.indexIdentity = verifiedIndexIdentity(index_, top.crop, sample.hash,
-                                                       sample.artHash, opt_);
+                                                       sample.artHash, sample.code, opt_);
           if (const char *dumpDir = std::getenv("CARDSCAN_DEBUG_CROPS")) {
             char name[512];
             std::snprintf(name, sizeof(name), "%s/crop_f%06d.jpg", dumpDir, index);

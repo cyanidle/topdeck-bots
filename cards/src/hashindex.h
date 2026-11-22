@@ -35,6 +35,8 @@ class HashIndex {
 
   std::vector<IndexMatch> lookup(const std::string &fullHex, const std::string &artHex,
                                  int topK) const;
+  std::vector<IndexMatch> lookupInSet(const std::string &fullHex, const std::string &artHex,
+                                      const std::string &setCode, int topK) const;
   std::vector<IndexMatch> lookupCard(const cv::Mat &card, int topK) const;
   std::vector<IndexMatch> findByName(const std::string &name, int topK) const;
   ArtVerification verifyArt(const cv::Mat &card, const IndexMatch &match) const;
