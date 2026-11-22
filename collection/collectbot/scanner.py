@@ -13,6 +13,7 @@ log = logging.getLogger(__name__)
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm"}
+SCAN_RESULT_LIMIT = 60
 
 
 def load_set_codes(path: str | Path) -> list[str]:
@@ -36,9 +37,6 @@ def report_cards(report: dict) -> list[ScanCard]:
             confidence=float(item.get("confidence") or 0.0),
         ))
     return cards
-
-
-SCAN_RESULT_LIMIT = 60
 
 
 def scan_media(path: str | Path, set_codes: list[str]) -> dict:

@@ -32,6 +32,7 @@ router = Router()
 TELEGRAM_TIMEOUT_S = 30.0
 NAME_QUERY_MIN = 3
 LIST_TEXT_LIMIT = 3500
+MediaObject = PhotoSize | VideoNote | Video | Animation | Document
 
 HELP_TEXT = (
     "Бот собирает коллекцию карт MTG.\n\n"
@@ -174,7 +175,7 @@ def _ensure_user(message: Message) -> int | None:
     return user.id
 
 
-def media_meta(obj) -> dict[str, object]:
+def media_meta(obj: MediaObject) -> dict[str, object]:
     meta: dict[str, object] = {}
     for field in ("file_unique_id", "file_id", "duration", "width", "height", "length"):
         value = getattr(obj, field, None)
@@ -301,7 +302,7 @@ async def cmd_list(message: Message) -> None:
     await message.answer(text, parse_mode="HTML")
 
 
-def media_info(message: Message) -> tuple[str, str, int, PhotoSize | VideoNote | Video | Animation | Document] | None:
+def media_info(message: Message) -> tuple[str, str, int, MediaObject] | None:
     if message.photo:
         photo = message.photo[-1]
         return "фото", ".jpg", photo.file_size or 0, photo
@@ -317,7 +318,7 @@ def media_info(message: Message) -> tuple[str, str, int, PhotoSize | VideoNote |
     return desc[0], desc[1], obj.file_size or 0, obj
 
 
-@router.message(F.photo | F.video | F.video_note | F.document)
+@router.message(F.photo | F.video | F.video_note | F.animation | F.document)
 async def on_media(message: Message, bot: Bot) -> None:
     user_id = _ensure_user(message)
     if user_id is None:
@@ -373,7 +374,8 @@ async def on_unhandled(message: Message) -> None:
         "content": message.content_type,
         "text": (message.text or message.caption or "")[:80],
     })
-    if message.text is not None or message.caption is not None:
+    if (message.text is not None or message.caption is not None
+            or message.chat.type != "private"):
         return
     await message.answer("Понимаю команды (/help) и медиа: пришли фото или видео карт.")
 
