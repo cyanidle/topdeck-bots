@@ -328,6 +328,8 @@ void testSetSnapFromIndex() {
         "a lookup inside one set finds only that set");
   check(index.lookupInSet("89e9763f76eb3677", "ddc0fedc3efcfe7e", "WAR", 2).size() == 1,
         "a lookup inside another set is not empty: it ranks that set's prints");
+  check(index.lookupInSet("89e9763f76eb3677", "ddc0fedc3efcfe7e", "", 2).empty(),
+        "a set-filtered lookup without a set returns nothing");
   std::remove(path.c_str());
 }
 

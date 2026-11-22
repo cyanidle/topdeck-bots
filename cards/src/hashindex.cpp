@@ -97,7 +97,8 @@ ArtVerification HashIndex::verifyArt(const cv::Mat &card, const IndexMatch &matc
 
   cv::BFMatcher matcher(cv::NORM_HAMMING);
   std::vector<std::vector<cv::DMatch>> knn;
-  matcher.knnMatch(queryDesc, referenceDesc, knn, 2);  std::vector<cv::Point2f> from;
+  matcher.knnMatch(queryDesc, referenceDesc, knn, 2);
+  std::vector<cv::Point2f> from;
   std::vector<cv::Point2f> to;
   for (const auto &pair : knn) {
     if (pair.size() < 2) continue;
@@ -128,6 +129,7 @@ std::vector<IndexMatch> HashIndex::lookupInSet(const std::string &fullHex,
                                                const std::string &setCode, int topK) const {
   // A reprint shares the artwork with the original print, so the global ranking can put a
   // different set first. Once the collector line names the set, the print is searched there.
+  if (setCode.empty()) return {};
   return lookup(fullHex, artHex, topK, setCode);
 }
 

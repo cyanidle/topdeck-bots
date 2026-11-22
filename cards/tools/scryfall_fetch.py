@@ -7,7 +7,8 @@ identifies cards by their picture instead of by the tiny collector line.
     python3 cards/tools/scryfall_fetch.py --sets fin,war,akh --out cards/data/scryfall
 
 Downloads go through `curl`: Python's urllib spends ~20 s per request on this host while
-curl answers the same request in 0.2 s. Requests are sequential with a small pause, well
+curl answers the same request in 0.2 s. Images are fetched in parallel (`--workers`, 4 by
+default — the tunnel is slow per stream) with a small `--delay` between submissions, well
 below Scryfall's documented 10 requests/second. Already cached cards are skipped, so the
 script resumes after an interruption.
 """

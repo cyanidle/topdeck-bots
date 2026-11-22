@@ -313,7 +313,7 @@ def export_tsv(conn: sqlite3.Connection, out: Path) -> int:
 
 
 def stats(conn: sqlite3.Connection, out: Path) -> None:
-    total = conn.execute("SELECT COUNT(*) FROM prints").fetchone()[0]
+    total = conn.execute("SELECT COUNT(DISTINCT path) FROM prints").fetchone()[0]
     hashed = conn.execute(
         "SELECT COUNT(DISTINCT path) FROM prints WHERE full_hash IS NOT NULL").fetchone()[0]
     sets = conn.execute("SELECT COUNT(*) FROM sets").fetchone()[0]
@@ -352,8 +352,9 @@ def run_once(args, conn: sqlite3.Connection, full_pass: bool = True) -> None:
         missing = []
         if args.sets:
             for code in args.sets:
-                present = conn.execute("SELECT COUNT(*) FROM prints WHERE set_code = ?",
-                                       (code.upper(),)).fetchone()[0]
+                present = conn.execute(
+                    "SELECT COUNT(DISTINCT card_id) FROM prints WHERE set_code = ?",
+                    (code.upper(),)).fetchone()[0]
                 fetched = conn.execute("SELECT size FROM sets WHERE code = ?",
                                        (code.upper(),)).fetchone()
                 if not present or not fetched or fetched[0] != args.size:

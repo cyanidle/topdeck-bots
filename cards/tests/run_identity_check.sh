@@ -70,5 +70,11 @@ missing = expected - set(identities)
 if missing:
     raise SystemExit("missing verified identities: %s" % sorted(missing))
 
+# Identities verified by eye that this engine is not expected to produce yet (see
+# cards/docs/spec-detector.md). Anything else is a wrong card, not a missing one.
+unexpected = set(identities) - expected - {"TMT:67", "C18:158"}
+if unexpected:
+    raise SystemExit("unexpected identities: %s" % sorted(unexpected))
+
 print("identity check passed (%d verified cards)" % len(expected))
 PY
