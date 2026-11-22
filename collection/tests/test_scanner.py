@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from collectbot.scanner import load_set_codes, report_cards, scan_media
@@ -46,6 +47,25 @@ class SetCodesTest(unittest.TestCase):
 
     def test_missing_file_is_empty(self):
         self.assertEqual(load_set_codes(Path("/nonexistent") / "codes.txt"), [])
+
+
+class PhashIndexOptionTest(unittest.TestCase):
+    def test_present_index_is_passed_to_engine(self):
+        with tempfile.NamedTemporaryFile(suffix=".tsv") as index:
+            with unittest.mock.patch("collectbot.scanner.analyze") as analyze:
+                analyze.return_value = {}
+                scan_media("/tmp/whatever.mp4", [], stride=2, phash_index=index.name)
+            self.assertEqual(analyze.call_args.kwargs["phash_index"], index.name)
+            self.assertEqual(analyze.call_args.kwargs["stride"], 2)
+
+    def test_missing_index_warns_and_scans_without_the_channel(self):
+        with unittest.mock.patch("collectbot.scanner.analyze") as analyze:
+            analyze.return_value = {}
+            with self.assertLogs("collectbot.scanner", level="WARNING") as logs:
+                scan_media("/tmp/whatever.mp4", [], stride=2,
+                           phash_index="/nonexistent/phash.tsv")
+        self.assertNotIn("phash_index", analyze.call_args.kwargs)
+        self.assertTrue(any("phash index not found" in line for line in logs.output))
 
 
 class LiveScanTest(unittest.TestCase):

@@ -439,7 +439,8 @@ async def _run_scan(path: Path, user_id: int) -> dict:
             log.info("scan queued behind previous scan",
                      extra={"user": user_id, "waited_s": round(waited, 1)})
         return await asyncio.to_thread(scan_media, str(path), ctx.set_codes,
-                                       ctx.settings.scan_stride)
+                                       ctx.settings.scan_stride,
+                                       ctx.settings.phash_index_path)
 
 
 async def _apply_scan(placeholder: Message, user_id: int, report: dict) -> None:

@@ -154,7 +154,7 @@ void        cardscan_free_string(char *text);
   Строку освобождает вызывающий через `cardscan_free_string`.
 * Ошибки: `NULL` + текст в `cardscan_last_error`.
 * Опции (`cardscan_set_option`): `ocr`, `title_fallback`, `min_track_hits`, `ocr_stride`,
-  `max_frames`, `stride`, `debug_dir`, `overlay`.
+  `max_frames`, `stride`, `phash_index`, `debug_dir`, `overlay`.
 * `cardscan_set_set_codes` — словарь кодов сетов (бот берёт его из своей БД).
 
 Потокобезопасность: один `CardscanHandle` — один поток. Разные хэндлы независимы,

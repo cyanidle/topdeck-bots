@@ -58,6 +58,8 @@ int cardscan_set_option(CardscanHandle *handle, const char *key, const char *val
       handle->options.maxFrames = std::stoi(v);
     } else if (k == "stride") {
       handle->options.stride = std::stoi(v);
+    } else if (k == "phash_index") {
+      handle->options.phashIndexPath = v;
     } else if (k == "debug_dir") {
       handle->options.debugDir = v;
     } else if (k == "overlay") {

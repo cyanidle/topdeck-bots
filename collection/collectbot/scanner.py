@@ -39,12 +39,20 @@ def report_cards(report: dict) -> list[ScanCard]:
     return cards
 
 
-def scan_media(path: str | Path, set_codes: list[str], stride: int = 1) -> dict:
+def scan_media(path: str | Path, set_codes: list[str], stride: int = 1,
+               phash_index: str = "") -> dict:
     source = Path(path)
     started = time.monotonic()
+    options: dict[str, object] = {"stride": stride}
+    if phash_index and Path(phash_index).is_file():
+        options["phash_index"] = str(phash_index)
+    elif phash_index:
+        log.warning("phash index not found, scanning without the image channel",
+                    extra={"phash_index": phash_index})
     log.info("scan started", extra={"file": source.name, "set_codes": len(set_codes),
-                                    "stride": stride})
-    report = analyze(str(path), set_codes=set_codes, stride=stride)
+                                    "stride": stride,
+                                    "phash_index": bool(options.get("phash_index"))})
+    report = analyze(str(path), set_codes=set_codes, **options)
     result = ",".join(
         f"{str(item.get('identity') or 'unknown')}[{item.get('identified_by') or '-'}]"
         for item in (report.get("cards") or [])[:SCAN_RESULT_LIMIT])

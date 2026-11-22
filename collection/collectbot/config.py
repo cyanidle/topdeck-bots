@@ -8,6 +8,7 @@ from topbot.config import load_env_file
 from . import REPO_ROOT
 
 DEFAULT_SET_CODES = REPO_ROOT / "cards" / "data" / "set-codes.txt"
+DEFAULT_PHASH_INDEX = REPO_ROOT / "cards" / "data" / "scryfall" / "phash.tsv"
 
 
 @dataclass
@@ -19,6 +20,7 @@ class Settings:
     scryfall_base: str = "https://api.scryfall.com"
     db_path: str = "./data/collection.sqlite3"
     set_codes_path: str = str(DEFAULT_SET_CODES)
+    phash_index_path: str = str(DEFAULT_PHASH_INDEX)
     user_agent: str = "collectbot/0.1 (+contact)"
     media_max_mb: int = 20
     scan_stride: int = 2
@@ -32,7 +34,8 @@ class Settings:
         raw.update(os.environ if environ is None else environ)
         settings = cls()
         for name in ("bot_token", "scryfall_base", "db_path", "set_codes_path",
-                     "user_agent", "log_level", "log_format", "log_file"):
+                     "phash_index_path", "user_agent", "log_level", "log_format",
+                     "log_file"):
             key = name.upper()
             if raw.get(key):
                 setattr(settings, name, raw[key])

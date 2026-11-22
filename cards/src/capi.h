@@ -18,6 +18,9 @@ const char *cardscan_version(void);
  *   "ocr_stride"     <int>     run OCR every Nth video frame (default 2)
  *   "max_frames"     <int>     stop after N frames, 0 = all (default 0)
  *   "stride"         <int>     process every Nth video frame (default 1)
+ *   "phash_index"    <path>    identify cards against a hash index (cardscan
+ *                              --build-index); the optional ".orb" sidecar next to
+ *                              it removes the need for the reference jpgs
  *   "debug_dir"      <path>    dump annotated frames and crops
  *   "overlay"        <path>    write an annotated video/overlay image
  * Returns 0 on success, -1 for an unknown key or bad value. */

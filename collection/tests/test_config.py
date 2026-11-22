@@ -10,6 +10,13 @@ class SettingsFromEnvTest(unittest.TestCase):
         settings = Settings.from_env(env_file="/nonexistent/.env", environ={})
         self.assertEqual(settings.scan_stride, 2)
         self.assertEqual(settings.media_max_mb, 20)
+        self.assertTrue(settings.phash_index_path.endswith(
+            "cards/data/scryfall/phash.tsv"))
+
+    def test_phash_index_override(self):
+        settings = Settings.from_env(env_file="/nonexistent/.env",
+                                     environ={"PHASH_INDEX_PATH": "/tmp/other.tsv"})
+        self.assertEqual(settings.phash_index_path, "/tmp/other.tsv")
 
     def test_scan_stride_override(self):
         settings = Settings.from_env(env_file="/nonexistent/.env", environ={"SCAN_STRIDE": "1"})
