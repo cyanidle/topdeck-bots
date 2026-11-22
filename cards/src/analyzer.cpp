@@ -540,12 +540,6 @@ std::string normalizeCollector(const std::string &collector) {
   return collector.substr(start);
 }
 
-bool acceptsIndexMatch(const std::vector<IndexMatch> &matches, const AnalyzerOptions &opt) {
-  if (matches.empty()) return false;
-  if (matches[0].artDistance > opt.indexShortlistDistance) return false;
-  return true;
-}
-
 // Only a keypoint match proves the two pictures show one card: the hash distances are too
 // close between the same card under studio light and an unrelated card, so the hash only
 // picks a shortlist and the best verified candidate wins. When the collector line already
@@ -795,8 +789,7 @@ std::vector<CardResult> buildCardsFromReads(const std::vector<ReadSample> &reads
                       voted.support >= opt.minNumberAgreement * voted.owners.size();
     if (!haveNumber) {
       NumberVote loose = voteNumber(false);
-      const int looseMinimum = std::max(3, opt.minNumberSupport);
-      if (!loose.number.empty() && loose.support >= looseMinimum) {
+      if (!loose.number.empty() && loose.support >= opt.minNumberSupportLoose) {
         voted = loose;
         haveNumber = true;
       }

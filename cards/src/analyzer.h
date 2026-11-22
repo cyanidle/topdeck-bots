@@ -39,6 +39,7 @@ struct AnalyzerOptions {
   double segmentNumberCodeTolerance = 1.1;
   int segmentIncompatibleRun = 3;
   int minNumberSupport = 2;
+  int minNumberSupportLoose = 3;
   double minNumberAgreement = 0.25;
   double setSnapDistance = 2.0;
   double duplicateMergeGapSeconds = 0.30;

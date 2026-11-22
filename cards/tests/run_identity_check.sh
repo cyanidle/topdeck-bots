@@ -42,9 +42,9 @@ expected = {
     "HOB:82",   # frame 252 "R 0082 / HOB - EN"
     "MSH:97",   # frame 886 "R 0097 / MSH - EN"
 }
-# AKH:187 (frame 198) is verified by eye too, but that card shares one show segment with
-# WAR:149 (5.5-8 s) and the current segmenter reports a single card per segment, so only one
-# of the two can pass; see GOAL.md ("known misses").
+# AKH:187 (frame 198) is verified by eye too, but that card's number is read once and the
+# card shares one show segment with WAR:149 (5.5-8 s), so it stays unknown; see
+# cards/docs/spec-detector.md ("Ограничения").
 
 report = json.load(open(sys.argv[1]))
 cards = report["cards"]

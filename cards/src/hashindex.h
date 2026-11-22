@@ -48,6 +48,9 @@ class HashIndex {
                             double maxDistance) const;
 
  private:
+  std::vector<IndexMatch> lookup(const std::string &fullHex, const std::string &artHex,
+                                 int topK, const std::string &onlySet) const;
+
   struct Entry {
     std::string setCode;
     std::string collector;

@@ -120,36 +120,24 @@ ArtVerification HashIndex::verifyArt(const cv::Mat &card, const IndexMatch &matc
 
 std::vector<IndexMatch> HashIndex::lookup(const std::string &fullHex, const std::string &artHex,
                                           int topK) const {
-  std::vector<IndexMatch> matches;
-  if (fullHex.empty() || artHex.empty()) return matches;
-  matches.reserve(entries_.size());
-  for (const auto &entry : entries_) {
-    IndexMatch m;
-    m.setCode = entry.setCode;
-    m.collector = entry.collector;
-    m.name = entry.name;
-    m.path = entry.path;
-    m.fullDistance = hashDistance(fullHex, entry.fullHex);
-    m.artDistance = hashDistance(artHex, entry.artHex);
-    matches.push_back(std::move(m));
-  }
-  std::sort(matches.begin(), matches.end(), [](const IndexMatch &a, const IndexMatch &b) {
-    if (a.artDistance != b.artDistance) return a.artDistance < b.artDistance;
-    return a.fullDistance < b.fullDistance;
-  });
-  if (topK > 0 && static_cast<int>(matches.size()) > topK) matches.resize(topK);
-  return matches;
+  return lookup(fullHex, artHex, topK, {});
 }
 
 std::vector<IndexMatch> HashIndex::lookupInSet(const std::string &fullHex,
                                                const std::string &artHex,
                                                const std::string &setCode, int topK) const {
-  std::vector<IndexMatch> matches;
-  if (fullHex.empty() || artHex.empty() || setCode.empty()) return matches;
   // A reprint shares the artwork with the original print, so the global ranking can put a
   // different set first. Once the collector line names the set, the print is searched there.
+  return lookup(fullHex, artHex, topK, setCode);
+}
+
+std::vector<IndexMatch> HashIndex::lookup(const std::string &fullHex, const std::string &artHex,
+                                          int topK, const std::string &onlySet) const {
+  std::vector<IndexMatch> matches;
+  if (fullHex.empty() || artHex.empty()) return matches;
+  matches.reserve(entries_.size());
   for (const auto &entry : entries_) {
-    if (entry.setCode != setCode) continue;
+    if (!onlySet.empty() && entry.setCode != onlySet) continue;
     IndexMatch m;
     m.setCode = entry.setCode;
     m.collector = entry.collector;

@@ -88,6 +88,7 @@ def safe_name(text: str) -> str:
 
 
 def load_known(meta_path: Path) -> set[str]:
+    """Keys are `id:size`, the same key `fetch_set` skips on, so a rerun resumes the cache."""
     known: set[str] = set()
     if not meta_path.is_file():
         return known
@@ -97,7 +98,9 @@ def load_known(meta_path: Path) -> set[str]:
                 record = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            known.add(record.get("id", ""))
+            card_id = record.get("id", "")
+            if card_id:
+                known.add(f"{card_id}:{record.get('size', 'small')}")
     return known
 
 
@@ -133,11 +136,11 @@ def fetch_set(code: str, out: Path, delay: float, meta, known: set[str], size: s
                 collector = str(card.get("collector_number", ""))
                 target = out / "images" / f"{card.get('set', code)}_{safe_name(collector)}.jpg"
                 pending.append((pool.submit(curl_file, image_url_, target, proxy), card,
-                                card_id, key, collector, target))
+                                card_id, key, collector, target, image_url_))
                 time.sleep(delay)
-            for future, card, card_id, key, collector, target in pending:
+            for future, card, card_id, key, collector, target, source_url in pending:
                 if not future.result():
-                    print(f"  ! failed: {image_url(card, size)}", file=sys.stderr, flush=True)
+                    print(f"  ! failed: {source_url}", file=sys.stderr, flush=True)
                     failed += 1
                     continue
                 meta.write(json.dumps({
