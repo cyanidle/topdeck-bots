@@ -11,8 +11,8 @@ from aiogram import Bot, F, Router
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import (BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup,
-                           Message)
+from aiogram.types import (BotCommand, CallbackQuery, Document, InlineKeyboardButton,
+                           InlineKeyboardMarkup, Message, PhotoSize, Video, VideoNote)
 
 from topbot.messages import plural
 from topbot.models import Card
@@ -32,8 +32,8 @@ LIST_TEXT_LIMIT = 3500
 
 HELP_TEXT = (
     "Бот собирает коллекцию карт MTG.\n\n"
-    "📸 Пришли фото или видео стопки карт (пузырём или файлом) — я читаю строки "
-    "коллекционера и добавляю распознанные карты в твою коллекцию.\n\n"
+    "📸 Пришли фото или видео стопки карт — сообщением, кружком или файлом — "
+    "я читаю строки коллекционера и добавляю распознанные карты в твою коллекцию.\n\n"
     "/list — моя коллекция\n"
     "/add TMT:67 — добавить печать по сету и номеру\n"
     "/add Ninja Teen — …или по имени карты\n"
@@ -277,24 +277,32 @@ async def cmd_list(message: Message) -> None:
     await message.answer(text, parse_mode="HTML")
 
 
-@router.message(F.photo | F.video | F.document)
+def media_info(message: Message) -> tuple[str, str, int, PhotoSize | VideoNote | Video | Document] | None:
+    if message.photo:
+        photo = message.photo[-1]
+        return "фото", ".jpg", photo.file_size or 0, photo
+    if message.video_note is not None:
+        note = message.video_note
+        return "видео-кружок", ".mp4", note.file_size or 0, note
+    obj = message.video or message.document
+    if obj is None:
+        return None
+    desc = classify_media(obj.file_name, obj.mime_type, message.video is not None)
+    if desc is None:
+        return None
+    return desc[0], desc[1], obj.file_size or 0, obj
+
+
+@router.message(F.photo | F.video | F.video_note | F.document)
 async def on_media(message: Message, bot: Bot) -> None:
     user_id = _ensure_user(message)
     if user_id is None:
         return
-    if message.photo:
-        photo = message.photo[-1]
-        label, suffix, size, downloadable = "фото", ".jpg", photo.file_size or 0, photo
-    else:
-        obj = message.video or message.document
-        if obj is None:
-            return
-        desc = classify_media(obj.file_name, obj.mime_type, message.video is not None)
-        if desc is None:
-            await message.answer("Принимаю фото и видео (пузырём или файлом), PDF не читаю.")
-            return
-        label, suffix = desc
-        size, downloadable = obj.file_size or 0, obj
+    info = media_info(message)
+    if info is None:
+        await message.answer("Принимаю фото, видео, кружки и файлы — PDF не читаю.")
+        return
+    label, suffix, size, downloadable = info
     limit = ctx.settings.media_max_mb * 1024 * 1024
     if size and size > limit:
         await message.answer(

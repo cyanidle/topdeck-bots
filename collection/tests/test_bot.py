@@ -1,11 +1,47 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
+
+from aiogram.types import Chat, Document, Message, PhotoSize, VideoNote
 
 from topbot.models import Card
 
-from collectbot.bot import classify_media, entry_line, fit_lines, parse_callback, render_collection
+from collectbot.bot import classify_media, entry_line, fit_lines, media_info, parse_callback, \
+    render_collection
 from collectbot.models import CollectionEntry
+
+
+def message_with(**kwargs) -> Message:
+    return Message(message_id=1, date=datetime(2026, 11, 22, tzinfo=timezone.utc),
+                   chat=Chat(id=1, type="private"), **kwargs)
+
+
+class MediaInfoTest(unittest.TestCase):
+    def test_photo(self):
+        photo = PhotoSize(file_id="f1", file_unique_id="u1", width=1280, height=720,
+                          file_size=123456)
+        info = media_info(message_with(photo=[photo]))
+        self.assertEqual(info[:3], ("фото", ".jpg", 123456))
+        self.assertIs(info[3], photo)
+
+    def test_video_note(self):
+        note = VideoNote(file_id="f2", file_unique_id="u2", length=384, duration=15,
+                         file_size=2 * 1024 * 1024)
+        info = media_info(message_with(video_note=note))
+        self.assertEqual(info[:3], ("видео-кружок", ".mp4", 2 * 1024 * 1024))
+        self.assertIs(info[3], note)
+
+    def test_document_image(self):
+        doc = Document(file_id="f3", file_unique_id="u3", file_name="card.jpg",
+                       mime_type="image/jpeg", file_size=999)
+        info = media_info(message_with(document=doc))
+        self.assertEqual(info[:3], ("фото", ".jpg", 999))
+
+    def test_unsupported_document(self):
+        doc = Document(file_id="f4", file_unique_id="u4", file_name="doc.pdf",
+                       mime_type="application/pdf")
+        self.assertIsNone(media_info(message_with(document=doc)))
 
 
 def entry(entry_id: int, set_code: str, number: str, count: int) -> CollectionEntry:
@@ -14,7 +50,7 @@ def entry(entry_id: int, set_code: str, number: str, count: int) -> CollectionEn
 
 
 class ClassifyMediaTest(unittest.TestCase):
-    def test_photo_bubble(self):
+    def test_no_hints_is_rejected(self):
         self.assertEqual(classify_media(None, None, is_video=False), None)
 
     def test_image_files(self):
@@ -23,7 +59,7 @@ class ClassifyMediaTest(unittest.TestCase):
         self.assertEqual(classify_media(None, "image/jpeg", False), ("фото", ".jpg"))
         self.assertEqual(classify_media("card", "image/webp", False), ("фото", ".jpg"))
 
-    def test_video_files_and_bubbles(self):
+    def test_video_files(self):
         self.assertEqual(classify_media("clip.mp4", None, False), ("видео", ".mp4"))
         self.assertEqual(classify_media("VID.MOV", None, False), ("видео", ".mov"))
         self.assertEqual(classify_media(None, "video/mp4", True), ("видео", ".mp4"))
