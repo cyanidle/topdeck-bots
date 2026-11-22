@@ -29,6 +29,11 @@ struct ArtVerification {
 
 class HashIndex {
  public:
+  HashIndex() = default;
+  ~HashIndex();
+  HashIndex(const HashIndex &) = delete;
+  HashIndex &operator=(const HashIndex &) = delete;
+
   bool load(const std::string &path);
   bool empty() const { return entries_.empty(); }
   size_t size() const { return entries_.size(); }
@@ -59,8 +64,22 @@ class HashIndex {
     std::string artHex;
     std::string path;
   };
+  // ORB keypoints/descriptors of one reference artwork: with a sidecar ".orb" file they
+  // are read from disk on demand, so the reference jpg cache is only needed at build time.
+  struct Reference {
+    std::vector<cv::Point2f> points;
+    cv::Mat descriptors;
+  };
+  static Reference computeReference(const cv::Mat &art);
+
+  friend bool buildHashIndex(const std::string &metaPath, const std::string &outPath);
+
   std::vector<Entry> entries_;
-  mutable std::map<std::string, cv::Mat> referenceCache_;
+  std::map<std::string, uint64_t> orbOffsets_;
+  FILE *orbFile_ = nullptr;
+  mutable std::map<std::string, Reference> referenceCache_;
+  const Reference *referenceFor(const std::string &path) const;
+  bool readReference(uint64_t offset, Reference &out) const;
 };
 
 bool buildHashIndex(const std::string &metaPath, const std::string &outPath);

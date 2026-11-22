@@ -31,6 +31,7 @@ cardscan <input.(jpg|png|mp4|mov|...)> [options]
   --reads <file>        пересобрать отчёт из таймлайна reads.txt без OCR
   --phash-index <file>  идентифицировать карты по индексу картинок (см. spec-scryfall-index)
   --build-index <meta.jsonl> <out.tsv>  собрать индекс pHash из кеша Scryfall
+                                        (рядом с TSV пишет сайдкар <out.tsv>.orb с ORB-эталонами)
   --hash-manifest <in.txt> <out.tsv>    посчитать хеши для списка картинок (для индексатора)
   --lookup <index.tsv> <image>          ранжировать карты индекса для картинки (pHash + ORB)
   --ocr-bench <meta.jsonl> [--samples n]  сравнить варианты OCR на синтетических строках

@@ -1,8 +1,12 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
+
+#include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
 
 #include "analyzer.h"
 #include "detector.h"
@@ -337,6 +341,97 @@ void testSetSnapFromIndex() {
   std::remove(path.c_str());
 }
 
+void testOrbSidecar() {
+  // A textured card-like image: ORB needs local structure, so scatter deterministic
+  // shapes across the whole face (the art region is cropped out of the middle).
+  cv::Mat card(488, 352, CV_8UC3, cv::Scalar(24, 24, 24));
+  cv::RNG rng(42);
+  for (int i = 0; i < 80; ++i) {
+    const cv::Point2f center(rng.uniform(10.f, 342.f), rng.uniform(10.f, 478.f));
+    const float radius = rng.uniform(3.f, 14.f);
+    cv::circle(card, center, radius,
+               cv::Scalar(rng.uniform(0, 255), rng.uniform(0, 255), rng.uniform(0, 255)), -1);
+  }
+
+  const std::string image = "/tmp/cardscan_test_orb_card.png";
+  const std::string meta = "/tmp/cardscan_test_orb_meta.jsonl";
+  const std::string tsv = "/tmp/cardscan_test_orb_index.tsv";
+  check(cv::imwrite(image, card), "write the synthetic card image");
+  {
+    std::ofstream out(meta);
+    out << "{\"set\":\"TST\",\"collector\":\"001\",\"name\":\"Orb Probe\",\"id\":\"a\","
+        << "\"path\":\"" << image << "\"}\n";
+    out << "{\"set\":\"TST\",\"collector\":\"001\",\"name\":\"Orb Probe\",\"id\":\"b\","
+        << "\"path\":\"" << image << "\"}\n";
+  }
+  check(cardscan::buildHashIndex(meta, tsv), "buildHashIndex writes the index");
+  {
+    std::ifstream orb(tsv + ".orb");
+    check(orb.good(), "buildHashIndex writes the .orb sidecar");
+  }
+
+  cardscan::HashIndex viaOrb;
+  check(viaOrb.load(tsv) && viaOrb.size() == 1,
+        "the index with a sidecar loads, one line per cached image");
+  const std::vector<cardscan::IndexMatch> found = viaOrb.lookupCard(card, 1);
+  check(found.size() == 1 && found[0].setCode == "TST", "lookupCard finds the indexed card");
+  if (found.empty()) {
+    std::remove(image.c_str());
+    std::remove(meta.c_str());
+    std::remove(tsv.c_str());
+    std::remove((tsv + ".orb").c_str());
+    return;
+  }
+  const cardscan::ArtVerification withOrb = viaOrb.verifyArt(card, found[0]);
+  check(withOrb.goodMatches >= 50, "verifyArt via .orb matches the artwork");
+  check(withOrb.inliers >= 20, "verifyArt via .orb finds homography inliers");
+
+  // The point of the sidecar: the reference image is gone, verification must still work.
+  std::remove(image.c_str());
+  cardscan::HashIndex noImages;
+  check(noImages.load(tsv) && noImages.size() == 1, "the index loads without the image");
+  const cardscan::ArtVerification withoutJpg = noImages.verifyArt(card, found[0]);
+  check(withoutJpg.goodMatches == withOrb.goodMatches && withoutJpg.inliers == withOrb.inliers,
+        "verifyArt works with only the .orb sidecar");
+
+  // A re-exported TSV must not silently reuse the stale sidecar: the checksum mismatch
+  // downgrades to the image path, and with the image gone there is no reference at all.
+  std::string original;
+  {
+    std::ifstream t(tsv, std::ios::binary);
+    std::ostringstream buffer;
+    buffer << t.rdbuf();
+    original = buffer.str();
+  }
+  {
+    std::ofstream t(tsv, std::ios::binary | std::ios::trunc);
+    t << ("X" + original.substr(1));  // same line count, different bytes
+  }
+  cardscan::HashIndex reexported;
+  check(reexported.load(tsv) && reexported.size() == 1, "a rebuilt TSV still loads");
+  const cardscan::ArtVerification rejected = reexported.verifyArt(card, found[0]);
+  check(rejected.goodMatches == 0 && rejected.inliers == 0,
+        "a TSV that differs from the sidecar build rejects the stale .orb");
+  {
+    std::ofstream t(tsv, std::ios::binary | std::ios::trunc);
+    t << original;
+  }
+
+  // Without the sidecar the reference is recomputed from the image; same input, same result.
+  std::remove((tsv + ".orb").c_str());
+  check(cv::imwrite(image, card), "restore the card image for the fallback path");
+  cardscan::HashIndex viaImages;
+  check(viaImages.load(tsv) && viaImages.size() == 1, "the index without a sidecar loads");
+  const cardscan::ArtVerification withImages = viaImages.verifyArt(card, found[0]);
+  check(withImages.goodMatches == withOrb.goodMatches && withImages.inliers == withOrb.inliers,
+        "verifyArt via imread fallback gives the same numbers");
+
+  std::remove(image.c_str());
+  std::remove(meta.c_str());
+  std::remove(tsv.c_str());
+  std::remove((tsv + ".orb").c_str());
+}
+
 }  // namespace
 
 int main() {
@@ -353,6 +448,7 @@ int main() {
   testCountingIgnoresThinSegments();
   testDuplicateCards();
   testSetSnapFromIndex();
+  testOrbSidecar();
   std::printf("%d checks, %d failures\n", gChecks, gFailures);
   return gFailures == 0 ? 0 : 1;
 }
