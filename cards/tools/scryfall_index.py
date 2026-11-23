@@ -3,11 +3,14 @@
 
 The engine identifies a card by its artwork hash, so it needs a table of
 `set`/`collector`/`name`/`pHash`/`artHash` rows and compares a crop against all of them.
-This tool owns that table: it downloads new prints (through `scryfall_fetch.py`), hashes
-the cached images with the engine itself (`cardscan --hash-manifest`, so the numbers are
-bit-identical to the lookup path) and exports the flat TSV the engine reads.
+This tool owns that data: it downloads new prints (through `scryfall_fetch.py`) and then
+lets the engine build the flat index itself (`cardscan --build-index`, so the numbers are
+bit-identical to the lookup path). The build is a merge: the previous index records are
+reused, only new images are hashed, and the TSV with its `.orb` sidecar is published as an
+atomic pair. Once the pair is published the engine never reads the jpgs again, so they are
+pruned right after a successful build (pass `--keep-images` to keep them).
 
-    # one pass: import the cache, hash what is new, reconcile set sizes, export the TSV
+    # one pass: import the cache, reconcile set sizes, build the index if needed
     python3 cards/tools/scryfall_index.py --sets fin,war,akh
 
     # a long-lived indexer that keeps the index fresh while the bot reads it
@@ -15,9 +18,11 @@ bit-identical to the lookup path) and exports the flat TSV the engine reads.
 
 Concurrency contract with the bot
 ---------------------------------
-* The engine reads the exported TSV. The exporter never writes it in place: it writes
-  `<out>.tmp-<pid>` and renames it over the old file, so a reader always sees either the
-  previous or the new complete index.
+* The engine publishes the TSV and `.orb` sidecar as a pair (the sidecar is renamed
+  first, the TSV second): a reader that lands between the two renames sees a checksum
+  mismatch and falls back to the jpg cache for that moment, never a wrong record.
+* The build only runs when new prints appeared, so the index files stay untouched
+  between downloads and a reader's open handles keep their meaning.
 * Readers that query the SQLite file directly work under WAL: writes are short batched
   transactions (`BEGIN IMMEDIATE`, `busy_timeout`), so a reader is never blocked for long
   and never sees a half-applied batch.
@@ -29,11 +34,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sqlite3
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -54,14 +57,9 @@ CREATE TABLE IF NOT EXISTS prints (
   collector TEXT NOT NULL,
   name      TEXT NOT NULL,
   size      TEXT NOT NULL,
-  path      TEXT NOT NULL,
-  full_hash TEXT,
-  art_hash  TEXT,
-  hashed_mtime REAL,
-  hashed_bytes INTEGER
+  path      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS prints_set ON prints(set_code);
-CREATE INDEX IF NOT EXISTS prints_hash ON prints(full_hash);
 CREATE TABLE IF NOT EXISTS sets (
   code       TEXT PRIMARY KEY,
   expected   INTEGER,
@@ -141,6 +139,8 @@ def import_meta(conn: sqlite3.Connection, meta: Path, batch: int = 2000) -> int:
                 rows.clear()
     if rows:
         upsert_prints(conn, rows)
+    if added:
+        state_set(conn, "export_needed", "1")
     return added
 
 
@@ -153,9 +153,7 @@ ON CONFLICT(key) DO UPDATE SET
   collector = excluded.collector,
   name      = excluded.name,
   size      = excluded.size,
-  path      = excluded.path,
-  full_hash = CASE WHEN prints.path = excluded.path THEN prints.full_hash END,
-  art_hash  = CASE WHEN prints.path = excluded.path THEN prints.art_hash END
+  path      = excluded.path
 """
 
 
@@ -165,86 +163,21 @@ def upsert_prints(conn: sqlite3.Connection, rows: list[tuple]) -> None:
     conn.commit()
 
 
-def pending_paths(conn: sqlite3.Connection, limit: int = 0) -> list[str]:
-    query = ("SELECT path FROM prints WHERE full_hash IS NULL OR art_hash IS NULL "
-             "GROUP BY path ORDER BY path")
-    if limit > 0:
-        query += f" LIMIT {int(limit)}"
-    return [row[0] for row in conn.execute(query)]
-
-
-def stale_paths(conn: sqlite3.Connection) -> list[str]:
-    """Rows whose image changed on disk since it was hashed."""
-    stale: list[str] = []
-    query = ("SELECT path, hashed_mtime, hashed_bytes FROM prints "
-             "WHERE full_hash IS NOT NULL AND art_hash IS NOT NULL GROUP BY path")
-    for path, mtime, size in conn.execute(query):
-        try:
-            stat = os.stat(path)
-        except OSError:
-            stale.append(path)
-            continue
-        if mtime is None or abs(stat.st_mtime - mtime) > 1e-6 or size != stat.st_size:
-            stale.append(path)
-    return stale
-
-
-def hash_paths(conn: sqlite3.Connection, paths: list[str], binary: Path, batch: int) -> int:
-    """Hashes images through the engine in chunks and stores the results in one transaction each."""
-    if not paths:
-        return 0
-    hashed = 0
-    for start in range(0, len(paths), batch):
-        chunk = paths[start:start + batch]
-        absolute = {str(Path(path).resolve()): path for path in chunk}
-        with tempfile.TemporaryDirectory(prefix="cardscan-hash-") as tmp:
-            manifest = Path(tmp) / "manifest.txt"
-            out = Path(tmp) / "hashes.tsv"
-            manifest.write_text("\n".join(absolute) + "\n", encoding="utf-8")
-            result = subprocess.run(
-                [str(binary), "--hash-manifest", str(manifest), str(out)],
-                capture_output=True, text=True)
-            if result.returncode != 0:
-                raise SystemExit(f"cardscan --hash-manifest failed: {result.stderr.strip()}")
-            rows: list[tuple] = []
-            for line in out.read_text(encoding="utf-8").splitlines():
-                fields = line.split("\t")
-                if len(fields) != 3 or not fields[1] or not fields[2]:
-                    continue
-                full_hash, art_hash = fields[1], fields[2]
-                path = absolute.get(fields[0], fields[0])
-                try:
-                    stat = os.stat(path)
-                except OSError:
-                    continue
-                rows.append((full_hash, art_hash, stat.st_mtime, stat.st_size, path))
-            conn.execute("BEGIN IMMEDIATE")
-            conn.executemany(
-                "UPDATE prints SET full_hash = ?, art_hash = ?, hashed_mtime = ?, "
-                "hashed_bytes = ? WHERE path = ?", rows)
-            conn.commit()
-            hashed += len(rows)
-        log(f"hashed {hashed}/{len(paths)}")
-    state_set(conn, "export_needed", "1")
-    conn.commit()
-    return hashed
-
-
-def fetch_sets(conn: sqlite3.Connection, codes: list[str], out: Path, size: str,
+def fetch_sets(conn: sqlite3.Connection, codes: list[str], cache: Path, size: str,
                delay: float, limit: int = 0, proxy: str = "", force: bool = False,
                workers: int = 4) -> int:
     """Downloads prints that the cache is missing; resumable, same as the fetcher alone."""
     if not codes:
         return 0
-    out.mkdir(parents=True, exist_ok=True)
-    meta_path = out / "meta.jsonl"
+    cache.mkdir(parents=True, exist_ok=True)
+    meta_path = cache / "meta.jsonl"
     known = scryfall_fetch.load_known(meta_path)
     written = 0
     with meta_path.open("a", encoding="utf-8") as meta:
         for code in codes[:limit or len(codes)]:
             log(f"set {code.lower()} ...")
             written_count, failed, seen = scryfall_fetch.fetch_set(
-                code.lower(), out, delay, meta, known, size, proxy, force, workers)
+                code.lower(), cache, delay, meta, known, size, proxy, force, workers)
             written += written_count
             log(f"set {code.lower()}: {written_count} images, {failed} failed, {seen} cards")
             conn.execute("BEGIN IMMEDIATE")
@@ -291,40 +224,89 @@ def reconcile(conn: sqlite3.Connection, codes: list[str] | None = None,
     return incomplete
 
 
-def export_tsv(conn: sqlite3.Connection, out: Path) -> int:
-    """Writes the engine index atomically: a reader sees the old or the new file, never a partial."""
-    rows = conn.execute(
-        "SELECT set_code, collector, name, full_hash, art_hash, path FROM prints "
-        "WHERE full_hash IS NOT NULL AND art_hash IS NOT NULL GROUP BY path "
-        "ORDER BY set_code, collector, path").fetchall()
-    out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_name(f"{out.name}.tmp-{os.getpid()}")
-    with tmp.open("w", encoding="utf-8", newline="\n") as handle:
-        for row in rows:
-            handle.write("\t".join(str(field) for field in row) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(tmp, out)
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def publish(args, conn: sqlite3.Connection) -> bool:
+    """Runs the engine's merge build when the meta log grew; prunes the jpg cache after."""
+    out = Path(args.out)
+    sidecar = out.with_name(out.name + ".orb")
+    if state_get(conn, "export_needed", "1") == "0" and out.is_file() and sidecar.is_file():
+        return False
+    # The jpg paths inside the meta log are repo-relative, so the engine must run from
+    # the repo root regardless of where this tool was started.
+    result = subprocess.run(
+        [str(Path(args.cardscan)), "--build-index", str(Path(args.meta)), str(out)],
+        cwd=str(repo_root()), capture_output=True, text=True)
+    if result.returncode != 0:
+        log(f"cardscan --build-index failed: {result.stderr.strip()}")
+        return False
+    for line in result.stderr.strip().splitlines():
+        if line.startswith("index"):
+            log(line)
     state_set(conn, "export_needed", "0")
     state_set(conn, "exported_at", str(int(time.time())))
     conn.commit()
-    log(f"index written: {out} ({len(rows)} cards)")
-    return len(rows)
+    if not args.keep_images:
+        prune_images(out)
+    return True
+
+
+def prune_images(out: Path) -> None:
+    """Drops the jpgs the published TSV references: their records are in the .orb already.
+
+    Only indexed images go: a jpg downloaded after this build read its meta must survive
+    for the next build, or its print would silently leave the index (the fetcher skips
+    keys already present in the meta log and never re-downloads them)."""
+    indexed: set[str] = set()
+    if out.is_file():
+        with out.open(encoding="utf-8") as handle:
+            for line in handle:
+                fields = line.rstrip("\n").split("\t")
+                if len(fields) >= 6 and fields[5]:
+                    indexed.add(fields[5])
+    images = repo_root() / out.parent / "images"
+    if not images.is_dir():
+        return
+    removed = 0
+    for jpg in images.glob("*.jpg"):
+        try:
+            relative = jpg.relative_to(repo_root()).as_posix()
+        except ValueError:
+            relative = jpg.as_posix()
+        if relative not in indexed:
+            continue
+        try:
+            jpg.unlink()
+            removed += 1
+        except OSError as error:
+            log(f"cannot remove {jpg}: {error}")
+    if removed:
+        log(f"pruned {removed} cached images")
 
 
 def stats(conn: sqlite3.Connection, out: Path) -> None:
     total = conn.execute("SELECT COUNT(DISTINCT path) FROM prints").fetchone()[0]
-    hashed = conn.execute(
-        "SELECT COUNT(DISTINCT path) FROM prints WHERE full_hash IS NOT NULL").fetchone()[0]
     sets = conn.execute("SELECT COUNT(*) FROM sets").fetchone()[0]
-    size = out.stat().st_size if out.is_file() else 0
-    log(f"prints={total} hashed={hashed} sets={sets} exported={out} ({size} bytes, "
-        f"updated {state_get(conn, 'exported_at', 'never')})")
+    cards = 0
+    if out.is_file():
+        with out.open(encoding="utf-8") as handle:
+            cards = sum(1 for _ in handle)
+    sidecar = out.with_name(out.name + ".orb")
+    orb = sidecar.stat().st_size if sidecar.is_file() else 0
+    log(f"prints={total} sets={sets} index={out} ({cards} cards, "
+        f".orb {orb} bytes, updated {state_get(conn, 'exported_at', 'never')})")
 
 
 def run_once(args, conn: sqlite3.Connection, full_pass: bool = True) -> None:
-    """One pass over the pipeline. `full_pass` guards the network and the file walk."""
+    """One pass over the pipeline. `full_pass` guards the network reconcile."""
     out = Path(args.out)
+    if args.force:
+        # A re-download with the same --size changes no meta keys, so the build would
+        # otherwise never notice the newer jpgs.
+        state_set(conn, "export_needed", "1")
+        conn.commit()
 
     def absorb() -> None:
         added = import_meta(conn, Path(args.meta))
@@ -332,20 +314,10 @@ def run_once(args, conn: sqlite3.Connection, full_pass: bool = True) -> None:
             log(f"imported {added} new prints")
         conn.execute("INSERT OR IGNORE INTO sets(code) SELECT DISTINCT set_code FROM prints")
         conn.commit()
-        todo = set(pending_paths(conn, args.limit))
-        if full_pass:
-            todo |= set(stale_paths(conn))
-        if todo:
-            log(f"hashing {len(todo)} images")
-            hash_paths(conn, sorted(todo), Path(args.cardscan), args.batch)
 
-    def publish() -> None:
-        if state_get(conn, "export_needed", "1") != "0" or not out.is_file():
-            export_tsv(conn, out)
-
-    # Hash and publish first: a long download must not hold back the index the bot reads.
+    # Build and publish first: a long download must not hold back the index the bot reads.
     absorb()
-    publish()
+    publish(args, conn)
 
     # One `--fetch-limit` set per pass: the index must stay publishable while it downloads.
     if not args.no_fetch:
@@ -364,7 +336,7 @@ def run_once(args, conn: sqlite3.Connection, full_pass: bool = True) -> None:
             fetch_sets(conn, missing, out.parent, args.size, args.delay, args.fetch_limit,
                        args.proxy, args.force, args.workers)
             absorb()
-            publish()
+            publish(args, conn)
 
         if full_pass and (args.reconcile or args.sets):
             incomplete = reconcile(conn, None, args.proxy)
@@ -374,10 +346,9 @@ def run_once(args, conn: sqlite3.Connection, full_pass: bool = True) -> None:
                 fetch_sets(conn, incomplete, out.parent, args.size, args.delay,
                            args.fetch_limit, args.proxy, args.force, args.workers)
                 absorb()
-                publish()
+                publish(args, conn)
 
-    if state_get(conn, "export_needed", "1") != "0" or not out.is_file():
-        export_tsv(conn, out)
+    publish(args, conn)
     stats(conn, out)
 
 
@@ -387,7 +358,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--db", default=DEFAULT_DB, help="SQLite index database")
     parser.add_argument("--meta", default=DEFAULT_META, help="fetcher metadata log (JSONL)")
     parser.add_argument("--out", default=DEFAULT_OUT, help="engine index TSV")
-    parser.add_argument("--cardscan", default=DEFAULT_BIN, help="cardscan binary used for hashing")
+    parser.add_argument("--cardscan", default=DEFAULT_BIN, help="cardscan binary that builds the index")
     parser.add_argument("--sets", default="", help="comma separated set codes to complete")
     parser.add_argument("--size", default="small", choices=["small", "normal", "large"])
     parser.add_argument("--delay", type=float, default=0.08, help="seconds between downloads")
@@ -395,23 +366,29 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         help="curl proxy URL for downloads, e.g. socks5h://127.0.0.1:1080")
     parser.add_argument("--force", action="store_true",
                         help="re-download cached images (e.g. after switching --size)")
-    parser.add_argument("--batch", type=int, default=500, help="images per hashing batch")
     parser.add_argument("--workers", type=int, default=4,
                         help="parallel image downloads (the tunnel is slow per stream)")
     parser.add_argument("--fetch-limit", type=int, default=0,
                         help="download at most N sets per pass (0 = all)")
-    parser.add_argument("--limit", type=int, default=0, help="hash at most N images this pass")
+    parser.add_argument("--keep-images", action="store_true",
+                        help="keep the downloaded jpgs after the index build (debugging)")
     parser.add_argument("--reconcile", action="store_true",
                         help="compare every known set with the Scryfall print count")
     parser.add_argument("--reconcile-interval", type=float, default=3600.0,
                         help="seconds between card-count checks in --watch mode")
     parser.add_argument("--export-interval", type=float, default=60.0,
-                        help="seconds between index exports in --watch mode")
+                        help="seconds between passes in --watch mode")
     parser.add_argument("--watch", action="store_true", help="keep refreshing the index")
     parser.add_argument("--no-fetch", action="store_true", help="never touch the network")
     parser.add_argument("--stats", action="store_true", help="print the database statistics only")
     args = parser.parse_args(argv)
     args.sets = [code.strip().upper() for code in args.sets.split(",") if code.strip()]
+    # The engine build runs from the repo root (jpg paths inside the meta log are
+    # repo-relative); anchor the default paths the same way so the tool works from any cwd.
+    root = repo_root()
+    for name in ("db", "meta", "out", "cardscan"):
+        if not Path(getattr(args, name)).is_absolute():
+            setattr(args, name, str(root / getattr(args, name)))
     return args
 
 
@@ -427,7 +404,7 @@ def main(argv: list[str]) -> int:
     if not args.watch:
         run_once(args, conn)
         return 0
-    log("watching: fetch -> hash -> export (Ctrl-C to stop)")
+    log("watching: fetch -> build (Ctrl-C to stop)")
     next_reconcile = 0.0
     while True:
         try:

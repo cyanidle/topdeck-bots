@@ -2,12 +2,17 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <unordered_set>
+
+#include <fcntl.h>
+#include <sys/file.h>
 
 #include <opencv2/calib3d.hpp>
 #include <opencv2/features2d.hpp>
@@ -79,6 +84,46 @@ void writeReferenceData(FILE *out, const std::vector<cv::Point2f> &points,
   std::fwrite(xy.data(), sizeof(float), xy.size(), out);
   std::fwrite(descriptors.data, 1, numPoints * kOrbDescriptorBytes, out);
 }
+
+bool splitRow(const std::string &line, std::string (&fields)[6]) {
+  std::istringstream row(line);
+  for (auto &field : fields) {
+    if (!std::getline(row, field, '\t')) return false;
+  }
+  return true;
+}
+
+bool copyBytes(FILE *dst, FILE *src, uint64_t begin, uint64_t end) {
+  if (end <= begin || std::fseek(src, static_cast<long>(begin), SEEK_SET) != 0) return false;
+  char buffer[65536];
+  for (uint64_t left = end - begin; left > 0;) {
+    const size_t want = left < sizeof(buffer) ? static_cast<size_t>(left) : sizeof(buffer);
+    if (std::fread(buffer, 1, want, src) != want) return false;
+    if (std::fwrite(buffer, 1, want, dst) != want) return false;
+    left -= want;
+  }
+  return true;
+}
+
+// Concurrent builds (the watcher plus a manual run) would interleave on the tmp files and
+// the paired renames; the late one waits here and then exits through the unchanged shortcut.
+struct FileLock {
+  int fd = -1;
+  bool held = false;
+
+  explicit FileLock(const std::string &path)
+      : fd(::open(path.c_str(), O_CREAT | O_RDWR, 0644)) {
+    if (fd < 0) return;
+    while (::flock(fd, LOCK_EX) != 0) {
+      if (errno != EINTR) return;
+    }
+    held = true;
+  }
+
+  ~FileLock() {
+    if (fd >= 0) ::close(fd);
+  }
+};
 
 }  // namespace
 
@@ -361,85 +406,250 @@ std::string HashIndex::setWithNumber(const std::string &code, const std::string 
 bool buildHashIndex(const std::string &metaPath, const std::string &outPath) {
   std::ifstream in(metaPath);
   if (!in) return false;
-  std::ofstream out(outPath);
-  if (!out) return false;
-  // Reference data lands in a ".orb" sidecar next to the TSV: one record per TSV line, in
-  // the same order, so run-time verification never needs the source jpgs again.
+  const FileLock buildLock(outPath + ".lock");
+  if (!buildLock.held) {
+    std::fprintf(stderr, "index: cannot lock %s.lock\n", outPath.c_str());
+    return false;
+  }
   const std::string orbPath = outPath + ".orb";
+  const std::string tsvTmp = outPath + ".tmp";
   const std::string partPath = orbPath + ".part";
-  FILE *data = std::fopen(partPath.c_str(), "wb");
-  std::vector<uint64_t> offsets;
-  std::unordered_set<std::string> seenPaths;
-  uint64_t tsvHash = kFnvOffsetBasis;
+  const std::string orbTmp = orbPath + ".tmp";
+
+  // The previous TSV: its rows are reused verbatim (same images give the same hashes) and
+  // its line order kept, so a rebuild without new prints rewrites byte-identical files.
+  std::vector<std::string> oldRows;
+  {
+    std::ifstream old(outPath);
+    std::string row;
+    while (std::getline(old, row)) oldRows.push_back(row);
+  }
+  uint64_t oldHash = kFnvOffsetBasis;
+  for (const auto &row : oldRows) {
+    oldHash = fnv1a64(oldHash, row.c_str(), row.size());
+    oldHash = fnv1a64(oldHash, "\n", 1);
+  }
+  std::unordered_map<std::string, size_t> oldRowByPath;
+  for (size_t i = 0; i < oldRows.size(); ++i) {
+    std::string fields[6];
+    if (splitRow(oldRows[i], fields)) oldRowByPath[fields[5]] = i;
+  }
+
+  // The previous sidecar is reusable only against the exact TSV it was built from; each
+  // record is then copied by byte range, so a rebuild reads no jpg it already knows.
+  struct Span {
+    uint64_t begin = 0;
+    uint64_t end = 0;
+  };
+  std::unordered_map<std::string, Span> spans;
+  bool orbMatchesOldTsv = false;
+  std::filesystem::file_time_type orbTime{};
+  bool haveOrbTime = false;
+  FILE *oldOrb = std::fopen(orbPath.c_str(), "rb");
+  if (oldOrb) {
+    std::error_code ec;
+    const auto stamped = std::filesystem::last_write_time(orbPath, ec);
+    if (!ec) {
+      orbTime = stamped;
+      haveOrbTime = true;
+    }
+    std::fseek(oldOrb, 0, SEEK_END);
+    const auto fileSize = static_cast<uint64_t>(std::ftell(oldOrb));
+    char magic[8];
+    uint32_t count = 0;
+    uint64_t storedHash = 0;
+    if (std::fseek(oldOrb, 0, SEEK_SET) == 0 && std::fread(magic, 1, 8, oldOrb) == 8 &&
+        std::memcmp(magic, kOrbMagic, 8) == 0 &&
+        std::fread(&count, sizeof(count), 1, oldOrb) == 1 && count == oldRows.size() &&
+        std::fread(&storedHash, sizeof(storedHash), 1, oldOrb) == 1 && storedHash == oldHash) {
+      orbMatchesOldTsv = true;
+      std::vector<uint64_t> offsets(count);
+      if (count == 0 || std::fread(offsets.data(), sizeof(uint64_t), count, oldOrb) == count) {
+        for (uint32_t i = 0; i < count; ++i) {
+          std::string fields[6];
+          if (!splitRow(oldRows[i], fields)) continue;
+          const uint64_t end = i + 1 < count ? offsets[i + 1] : fileSize;
+          if (end > offsets[i]) spans[fields[5]] = Span{offsets[i], end};
+        }
+      }
+    }
+  }
+
+  // Meta is the source of truth for which prints exist; the first line per cached image
+  // wins (several Scryfall printings share one jpg, and a duplicate in the shortlist
+  // would kill the two-fold inlier margin the acceptance rule demands).
+  std::unordered_set<std::string> metaPaths;
+  std::unordered_map<std::string, std::string> metaLine;
+  std::vector<std::string> newPaths;
   std::string line;
-  int written = 0;
   while (std::getline(in, line)) {
     const std::string path = jsonField(line, "path");
-    if (path.empty()) continue;
-    // Several Scryfall printings share one cached jpg; one TSV line per image keeps the
-    // shortlist free of self-duplicates (the margin rule compares the top candidates).
-    if (!seenPaths.insert(path).second) continue;
-    const cv::Mat image = cv::imread(path, cv::IMREAD_COLOR);
-    if (image.empty()) continue;
-    const HashIndex::Reference reference = HashIndex::computeReference(artRegion(image));
-    std::string row = jsonField(line, "set");
-    row += '\t';
-    row += jsonField(line, "collector");
-    row += '\t';
-    row += jsonField(line, "name");
-    row += '\t';
-    row += perceptualHash(image);
-    row += '\t';
-    row += artHash(image);
-    row += '\t';
-    row += path;
-    row += '\n';
-    out << row;
+    if (path.empty() || !metaPaths.insert(path).second) continue;
+    metaLine[path] = line;
+    if (!oldRowByPath.count(path)) newPaths.push_back(path);
+  }
+
+  std::ofstream out(tsvTmp, std::ios::binary);
+  FILE *data = std::fopen(partPath.c_str(), "wb");
+  if (!out || !data) {
+    if (data) std::fclose(data);
+    if (oldOrb) std::fclose(oldOrb);
+    std::remove(tsvTmp.c_str());
+    std::remove(partPath.c_str());
+    std::fprintf(stderr, "index: cannot write %s\n", tsvTmp.c_str());
+    return false;
+  }
+  std::vector<uint64_t> offsets;
+  uint64_t tsvHash = kFnvOffsetBasis;
+  int written = 0;
+  int recycled = 0;
+
+  auto imageNewerThanSidecar = [&](const std::string &path) {
+    if (!haveOrbTime) return false;
+    std::error_code ec;
+    const auto stamped = std::filesystem::last_write_time(path, ec);
+    return !ec && stamped > orbTime;
+  };
+
+  auto emit = [&](const std::string &row, const Span *span, const cv::Mat &image) -> bool {
+    out << row << '\n';
     tsvHash = fnv1a64(tsvHash, row.c_str(), row.size());
-    if (data) {
-      offsets.push_back(static_cast<uint64_t>(std::ftell(data)));
+    tsvHash = fnv1a64(tsvHash, "\n", 1);
+    offsets.push_back(static_cast<uint64_t>(std::ftell(data)));
+    if (span) {
+      if (!copyBytes(data, oldOrb, span->begin, span->end)) return false;
+      ++recycled;
+    } else {
+      const HashIndex::Reference reference = HashIndex::computeReference(artRegion(image));
       writeReferenceData(data, reference.points, reference.descriptors);
     }
     ++written;
-  }
-  if (data) {
-    std::fclose(data);
-    FILE *orb = std::fopen(orbPath.c_str(), "wb");
-    FILE *src = orb ? std::fopen(partPath.c_str(), "rb") : nullptr;
-    bool sidecar = false;
-    if (orb && src) {
-      const uint32_t count = static_cast<uint32_t>(offsets.size());
-      // Offsets were taken in the part file; in the final file the header precedes the
-      // records, so each one shifts by the header size.
-      const uint64_t headerBytes =
-          8 + sizeof(count) + sizeof(tsvHash) + sizeof(uint64_t) * count;
-      std::vector<uint64_t> absolute(offsets.size());
-      for (size_t i = 0; i < offsets.size(); ++i) absolute[i] = headerBytes + offsets[i];
-      sidecar = std::fwrite(kOrbMagic, 1, 8, orb) == 8 &&
-                std::fwrite(&count, sizeof(count), 1, orb) == 1 &&
-                std::fwrite(&tsvHash, sizeof(tsvHash), 1, orb) == 1 &&
-                std::fwrite(absolute.data(), sizeof(uint64_t), absolute.size(), orb) ==
-                    absolute.size();
-      char buffer[65536];
-      size_t chunk;
-      while (sidecar && (chunk = std::fread(buffer, 1, sizeof(buffer), src)) > 0) {
-        sidecar = std::fwrite(buffer, 1, chunk, orb) == chunk;
+    return true;
+  };
+
+  auto buildRows = [&]() -> bool {
+    for (size_t i = 0; i < oldRows.size(); ++i) {
+      std::string fields[6];
+      if (!splitRow(oldRows[i], fields)) continue;
+      if (!metaPaths.count(fields[5])) continue;  // meta no longer lists the print
+      auto span = spans.find(fields[5]);
+      if (span != spans.end() && !imageNewerThanSidecar(fields[5])) {
+        if (!emit(oldRows[i], &span->second, {})) return false;
+        continue;
       }
+      // No record yet, or the jpg changed since the record was written: redo both.
+      const cv::Mat image = cv::imread(fields[5], cv::IMREAD_COLOR);
+      if (image.empty()) {
+        if (span != spans.end()) {
+          if (!emit(oldRows[i], &span->second, {})) return false;
+        }
+        continue;  // unreadable jpg without a record: the print leaves the index
+      }
+      const std::string &meta = metaLine.at(fields[5]);
+      std::string row = jsonField(meta, "set");
+      row += '\t';
+      row += jsonField(meta, "collector");
+      row += '\t';
+      row += jsonField(meta, "name");
+      row += '\t';
+      row += perceptualHash(image);
+      row += '\t';
+      row += artHash(image);
+      row += '\t';
+      row += fields[5];
+      if (!emit(row, nullptr, image)) return false;
     }
-    if (orb) std::fclose(orb);
-    if (src) std::fclose(src);
+    for (const auto &path : newPaths) {
+      const cv::Mat image = cv::imread(path, cv::IMREAD_COLOR);
+      if (image.empty()) continue;
+      const std::string &meta = metaLine.at(path);
+      std::string row = jsonField(meta, "set");
+      row += '\t';
+      row += jsonField(meta, "collector");
+      row += '\t';
+      row += jsonField(meta, "name");
+      row += '\t';
+      row += perceptualHash(image);
+      row += '\t';
+      row += artHash(image);
+      row += '\t';
+      row += path;
+      if (!emit(row, nullptr, image)) return false;
+    }
+    return true;
+  };
+
+  const bool built = buildRows();
+  std::fclose(data);
+  if (oldOrb) {
+    std::fclose(oldOrb);
+    oldOrb = nullptr;
+  }
+  out.close();
+  if (!built || !out || written == 0) {
+    std::remove(tsvTmp.c_str());
     std::remove(partPath.c_str());
-    if (written > 0) {
-      if (sidecar) {
-        std::fprintf(stderr, "index: %d cards, %s.orb written\n", written, outPath.c_str());
-      } else {
-        std::fprintf(stderr, "index: %d cards, %s.orb FAILED\n", written, outPath.c_str());
-      }
-      return true;
+    std::fprintf(stderr, "index: %d cards\n", written);
+    return built && out && written > 0;
+  }
+  if (orbMatchesOldTsv && tsvHash == oldHash && oldRows.size() == static_cast<size_t>(written)) {
+    // Nothing changed and the published pair already matches this meta: keep it untouched.
+    std::remove(tsvTmp.c_str());
+    std::remove(partPath.c_str());
+    std::fprintf(stderr, "index: %d cards, unchanged\n", written);
+    return true;
+  }
+
+  FILE *orb = std::fopen(orbTmp.c_str(), "wb");
+  FILE *src = std::fopen(partPath.c_str(), "rb");
+  bool sidecar = orb && src;
+  if (sidecar) {
+    const uint32_t count = static_cast<uint32_t>(offsets.size());
+    // Offsets were taken in the part file; in the final file the header precedes the
+    // records, so each one shifts by the header size.
+    const uint64_t headerBytes =
+        8 + sizeof(count) + sizeof(tsvHash) + sizeof(uint64_t) * count;
+    std::vector<uint64_t> absolute(offsets.size());
+    for (size_t i = 0; i < offsets.size(); ++i) absolute[i] = headerBytes + offsets[i];
+    sidecar = std::fwrite(kOrbMagic, 1, 8, orb) == 8 &&
+              std::fwrite(&count, sizeof(count), 1, orb) == 1 &&
+              std::fwrite(&tsvHash, sizeof(tsvHash), 1, orb) == 1 &&
+              std::fwrite(absolute.data(), sizeof(uint64_t), absolute.size(), orb) ==
+                  absolute.size();
+    char buffer[65536];
+    size_t chunk;
+    while (sidecar && (chunk = std::fread(buffer, 1, sizeof(buffer), src)) > 0) {
+      sidecar = std::fwrite(buffer, 1, chunk, orb) == chunk;
     }
   }
-  std::fprintf(stderr, "index: %d cards\n", written);
-  return written > 0;
+  if (orb) std::fclose(orb);
+  if (src) std::fclose(src);
+  std::remove(partPath.c_str());
+  if (!sidecar) {
+    std::remove(tsvTmp.c_str());
+    std::remove(orbTmp.c_str());
+    std::fprintf(stderr, "index: %s.orb FAILED, keeping the previous index\n",
+                 outPath.c_str());
+    return false;
+  }
+
+  // Published as a pair: a reader that lands between the two renames sees a checksum
+  // mismatch and falls back to the jpgs for that moment, never a wrong record.
+  std::error_code ec;
+  std::filesystem::rename(orbTmp, orbPath, ec);
+  if (ec) {
+    std::remove(tsvTmp.c_str());
+    std::fprintf(stderr, "index: rename %s failed: %s\n", orbTmp.c_str(), ec.message().c_str());
+    return false;
+  }
+  std::filesystem::rename(tsvTmp, outPath, ec);
+  if (ec) {
+    std::fprintf(stderr, "index: rename %s failed: %s\n", tsvTmp.c_str(), ec.message().c_str());
+    return false;
+  }
+  std::fprintf(stderr, "index: %d cards (%d records reused), %s.orb written\n", written,
+               recycled, outPath.c_str());
+  return true;
 }
 
 }  // namespace cardscan

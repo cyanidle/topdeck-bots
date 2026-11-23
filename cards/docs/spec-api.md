@@ -31,8 +31,10 @@ cardscan <input.(jpg|png|mp4|mov|...)> [options]
   --reads <file>        пересобрать отчёт из таймлайна reads.txt без OCR
   --phash-index <file>  идентифицировать карты по индексу картинок (см. spec-scryfall-index)
   --build-index <meta.jsonl> <out.tsv>  собрать индекс pHash из кеша Scryfall
-                                        (рядом с TSV пишет сайдкар <out.tsv>.orb с ORB-эталонами)
-  --hash-manifest <in.txt> <out.tsv>    посчитать хеши для списка картинок (для индексатора)
+                                        (merge: прежние записи переиспользуются, новые
+                                        хешируются; TSV и сайдкар <out.tsv>.orb
+                                        публикуются атомарной парой)
+  --hash-manifest <in.txt> <out.tsv>    посчитать хеши для списка картинок (утилита)
   --lookup <index.tsv> <image>          ранжировать карты индекса для картинки (pHash + ORB)
   --ocr-bench <meta.jsonl> [--samples n]  сравнить варианты OCR на синтетических строках
   --extract-cards <video> <dir>         прогнать детектор и сохранить по одному
@@ -49,8 +51,10 @@ cardscan <input.(jpg|png|mp4|mov|...)> [options]
 (`--cards <dir>`, секунды). `manifest.tsv` описывает каждый прямоугольник: `id`, файл, кадры,
 `content_bottom` (доля высоты, где кончается карта), хеши и четырёхугольник в кадре.
 
-Индекс ведёт `cards/tools/scryfall_index.py` (SQLite + атомарный экспорт TSV); `--build-index`
-оставлен для разовых прогонов по готовому `meta.jsonl`.
+Индекс ведёт `cards/tools/scryfall_index.py` (SQLite; при появлении новых печатей он сам
+запускает `--build-index`, поэтому TSV и `.orb` всегда согласованы). Ручной `--build-index` —
+разовые прогоны; восстановить потерянный `.orb` им можно только пока жив кеш jpg (после
+чистки кеша это перекачка `--force`, см. spec-scryfall-index).
 
 Код возврата: 0 — успех, 1 — ошибка выполнения, 2 — ошибка аргументов.
 

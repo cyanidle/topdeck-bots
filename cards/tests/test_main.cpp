@@ -341,17 +341,27 @@ void testSetSnapFromIndex() {
   std::remove(path.c_str());
 }
 
-void testOrbSidecar() {
-  // A textured card-like image: ORB needs local structure, so scatter deterministic
-  // shapes across the whole face (the art region is cropped out of the middle).
+cv::Mat makeTexturedCard(uint64_t seed) {
   cv::Mat card(488, 352, CV_8UC3, cv::Scalar(24, 24, 24));
-  cv::RNG rng(42);
+  cv::RNG rng(seed);
   for (int i = 0; i < 80; ++i) {
     const cv::Point2f center(rng.uniform(10.f, 342.f), rng.uniform(10.f, 478.f));
     const float radius = rng.uniform(3.f, 14.f);
     cv::circle(card, center, radius,
                cv::Scalar(rng.uniform(0, 255), rng.uniform(0, 255), rng.uniform(0, 255)), -1);
   }
+  return card;
+}
+
+cardscan::IndexMatch firstByName(const cardscan::HashIndex &index, const std::string &name) {
+  const auto found = index.findByName(name, 1);
+  return found.empty() ? cardscan::IndexMatch{} : found.front();
+}
+
+void testOrbSidecar() {
+  // A textured card-like image: ORB needs local structure, so scatter deterministic
+  // shapes across the whole face (the art region is cropped out of the middle).
+  const cv::Mat card = makeTexturedCard(42);
 
   const std::string image = "/tmp/cardscan_test_orb_card.png";
   const std::string meta = "/tmp/cardscan_test_orb_meta.jsonl";
@@ -380,6 +390,7 @@ void testOrbSidecar() {
     std::remove(meta.c_str());
     std::remove(tsv.c_str());
     std::remove((tsv + ".orb").c_str());
+    std::remove((tsv + ".lock").c_str());
     return;
   }
   const cardscan::ArtVerification withOrb = viaOrb.verifyArt(card, found[0]);
@@ -430,6 +441,94 @@ void testOrbSidecar() {
   std::remove(meta.c_str());
   std::remove(tsv.c_str());
   std::remove((tsv + ".orb").c_str());
+  std::remove((tsv + ".lock").c_str());
+}
+
+void testOrbMerge() {
+  const cv::Mat cardA = makeTexturedCard(7);
+  const cv::Mat cardB = makeTexturedCard(1234);
+  const cv::Mat cardA2 = makeTexturedCard(99);
+  const std::string imageA = "/tmp/cardscan_test_merge_a.png";
+  const std::string imageB = "/tmp/cardscan_test_merge_b.png";
+  const std::string meta = "/tmp/cardscan_test_merge_meta.jsonl";
+  const std::string tsv = "/tmp/cardscan_test_merge_index.tsv";
+
+  auto writeMeta = [&](const std::vector<std::string> &images) {
+    std::ofstream out(meta);
+    for (size_t i = 0; i < images.size(); ++i) {
+      out << "{\"set\":\"M" << i << "\",\"collector\":\"00" << (i + 1)
+          << "\",\"name\":\"Merge " << i << "\",\"path\":\"" << images[i] << "\"}\n";
+    }
+  };
+
+  auto writeMetaNamed = [&](const std::vector<std::pair<std::string, std::string>> &entries) {
+    std::ofstream out(meta);
+    for (size_t i = 0; i < entries.size(); ++i) {
+      out << "{\"set\":\"M" << i << "\",\"collector\":\"00" << (i + 1)
+          << "\",\"name\":\"" << entries[i].second << "\",\"path\":\"" << entries[i].first
+          << "\"}\n";
+    }
+  };
+
+  check(cv::imwrite(imageA, cardA), "write card A");
+  writeMeta({imageA});
+  check(cardscan::buildHashIndex(meta, tsv), "initial build");
+  std::remove(imageA.c_str());  // the steady state: jpgs live only until the build
+
+  // A new print arrives; A has no jpg anymore, its record must be reused as is.
+  check(cv::imwrite(imageB, cardB), "write card B");
+  writeMeta({imageA, imageB});
+  check(cardscan::buildHashIndex(meta, tsv), "merge build picks up card B");
+  cardscan::HashIndex merged;
+  check(merged.load(tsv) && merged.size() == 2, "merged index holds both cards");
+  const cardscan::IndexMatch rowA = firstByName(merged, "Merge 0");
+  const cardscan::IndexMatch rowB = firstByName(merged, "Merge 1");
+  check(!rowA.path.empty() && !rowB.path.empty(), "both merged cards are findable by name");
+
+  std::remove(imageB.c_str());
+  const cardscan::ArtVerification verifyA = merged.verifyArt(cardA, rowA);
+  const cardscan::ArtVerification verifyB = merged.verifyArt(cardB, rowB);
+  check(verifyA.goodMatches >= 50 && verifyA.inliers >= 20,
+        "card A verifies from its reused record without the jpg");
+  check(verifyB.goodMatches >= 50 && verifyB.inliers >= 20,
+        "card B verifies from its fresh record without the jpg");
+
+  // No meta change and no jpgs: a rebuild must keep the published pair usable.
+  check(cardscan::buildHashIndex(meta, tsv), "no-op rebuild succeeds");
+  cardscan::HashIndex unchanged;
+  check(unchanged.load(tsv) && unchanged.size() == 2, "no-op rebuild keeps the index");
+  check(unchanged.verifyArt(cardA, firstByName(unchanged, "Merge 0")).goodMatches ==
+            verifyA.goodMatches,
+        "no-op rebuild keeps card A's record");
+
+  // A re-downloaded image is newer than the sidecar: its record must be recomputed.
+  check(cv::imwrite(imageA, cardA2), "rewrite card A with new artwork");
+  check(cardscan::buildHashIndex(meta, tsv), "rebuild after the image changed");
+  cardscan::HashIndex updated;
+  check(updated.load(tsv) && updated.size() == 2, "rebuild after change loads");
+  const cardscan::IndexMatch changedRow = firstByName(updated, "Merge 0");
+  const cardscan::ArtVerification verifyNew = updated.verifyArt(cardA2, changedRow);
+  const cardscan::ArtVerification verifyOld = updated.verifyArt(cardA, changedRow);
+  check(verifyNew.goodMatches >= 50, "the changed artwork verifies against its new record");
+  check(verifyOld.goodMatches * 3 < verifyNew.goodMatches,
+        "the old artwork no longer matches the recomputed record");
+
+  // A recomputed row carries the fields of the meta log, not of the old TSV line.
+  check(cv::imwrite(imageB, cardB), "rewrite card B for the rename pass");
+  writeMetaNamed({{imageA, "Merge 0"}, {imageB, "Merge One"}});
+  check(cardscan::buildHashIndex(meta, tsv), "rebuild after the meta name changed");
+  cardscan::HashIndex renamed;
+  check(renamed.load(tsv) && renamed.size() == 2, "rebuild after rename loads");
+  check(!firstByName(renamed, "Merge One").path.empty(),
+        "the recomputed row carries the new meta name");
+  check(firstByName(renamed, "Merge 1").path.empty(), "the old TSV name is gone");
+
+  std::remove(imageA.c_str());
+  std::remove(imageB.c_str());
+  std::remove(meta.c_str());
+  std::remove(tsv.c_str());
+  std::remove((tsv + ".orb").c_str());
+  std::remove((tsv + ".lock").c_str());
 }
 
 }  // namespace
@@ -449,6 +548,7 @@ int main() {
   testDuplicateCards();
   testSetSnapFromIndex();
   testOrbSidecar();
+  testOrbMerge();
   std::printf("%d checks, %d failures\n", gChecks, gFailures);
   return gFailures == 0 ? 0 : 1;
 }
